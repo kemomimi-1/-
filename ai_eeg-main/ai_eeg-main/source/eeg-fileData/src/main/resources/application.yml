@@ -1,0 +1,175 @@
+spring:
+  application:
+    name: eeg-ai-platform
+
+  # 数据库配置
+  datasource:
+    url: jdbc:mysql://localhost:3306/eeg_platform?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC&useLegacyDatetimeCode=false&useJDBCCompliantTimezoneShift=true&useTimezone=true
+    username: root
+    password: 2745099813Aa
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  # JPA配置
+  jpa:
+    hibernate:
+      ddl-auto: update #自动建表
+    show-sql: false
+    database-platform: org.hibernate.dialect.MySQLDialect
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  # Session配置
+  session:
+    store-type: memory
+    timeout: 30m
+
+# InfluxDB配置
+influxdb:
+  url: http://localhost:8181
+  token: apiv3_6hQgoPWltvJPW3a-Pyf116CfbUlMVylHofRF7IcXom5YMXDF4mNUmrq39ccq5SmLncH1k1Z1RgUdGHfgg3caag
+
+# 服务器配置
+server:
+  port: 8080
+  servlet:
+    session:
+      cookie:
+        max-age: 1800
+        http-only: true
+
+# EEG平台端口池配置
+eeg:
+  server:
+    public-ip: 127.0.0.1
+
+  port-pool:
+    start: 15001
+    end: 65535
+    ports-per-user: 3
+    reservation-timeout-minutes: 30
+
+    # 实时频谱分析配置
+  realtime-analysis:
+    sample-window-minutes: 2          # 分析窗口时长（分钟）
+    min-samples: 10                   # 最少样本数
+    analysis-interval-seconds: 30     # 分析间隔（秒）
+    enable-auto-start: false           # 是否自动启动分析（无EEG设备时关闭，避免空查询循环）
+    confidence-threshold: 0.6         # 置信度阈值
+
+      # 状态判断阈值
+  thresholds:
+    alpha-relaxed: 0.35             # Alpha放松状态阈值
+    alpha-deep-relaxed: 0.5         # Alpha深度放松阈值
+    beta-focused: 0.4               # Beta专注状态阈值
+    beta-stressed: 0.6              # Beta紧张状态阈值
+    theta-creative: 0.3             # Theta创造状态阈值
+    delta-drowsy: 0.4               # Delta困倦状态阈值
+    gamma-alert: 0.4                # Gamma警觉状态阈值
+    gamma-hyperactive: 0.6          # Gamma过度活跃阈值
+
+  # MCP服务配置 - 更自由的工具使用
+  mcp:
+    # 基础性能配置
+    performance:
+      max-concurrent-analysis: 10       # 允许更多并发
+      summary-timeout: 300              # 更长的超时时间
+      feature-extraction-timeout: 300
+      enable-parallel-processing: true
+      data-point-threshold: 500000      # 更高的数据点阈值
+
+    # 数据质量标准 - 放宽限制
+    quality-standards:
+      min-data-completeness: 0.8        # 降低完整性要求
+      max-outlier-percentage: 0.1       # 放宽异常值限制
+      min-signal-to-noise-ratio: 2.0    # 降低信噪比要求
+      min-required-channels: 1          # 最少1个通道即可
+      max-artifact-level: 0.2           # 放宽伪迹限制
+
+    # AI集成配置
+    ai-integration:
+      enable-auto-summarization: true
+      default-summary-level: comprehensive
+      max-feature-vector-size: 5000     # 增加特征向量大小
+      enable-smart-tool-orchestration: true
+      tool-recommendation-confidence: 0.5  # 降低置信度要求
+
+    # 安全配置 - 基本安全保证
+    security:
+      custom-sql:
+        enable: true
+        max-query-length: 5000          # 允许更长的查询
+        timeout-seconds: 300            # 更长的超时
+        enable-query-logging: false     # 减少日志记录
+      access-control:
+        enable-user-isolation: true
+        max-requests-per-minute: 100    # 放宽请求限制
+
+# AI大模型配置
+ai:
+  tongyi:
+    # 基础API配置
+    api-key: sk-1f46b1e2693846c4a85db50d5e41460c
+    base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    model: qwen-max
+
+    # 【放宽】调用参数 - 支持复杂协作
+    temperature: 0.1
+    max-tokens: 8000                    # 增加最大token数
+    top-p: 0.8
+    timeout: 300                        # 5分钟超时
+    connection-timeout: 60
+    read-timeout: 300
+    max-retries: 3
+
+    # 【最大自由度】MCP工具配置
+    enable-mcp-tools: true
+    max-tool-calls: 14                 # 允许最多14个工具调用
+    enable-auto-selection: true
+    enable-tool-collaboration: true
+    collaboration-mode: "free"          # 自由协作模式
+
+    # 【自由】协作优化配置
+    collaboration-optimization:
+      enable-smart-sequencing: true
+      enable-parallel-calls: false      # 保持串行以确保稳定性
+      enable-result-caching: true
+      enable-context-sharing: true
+      enable-dynamic-strategy: true     # 启用动态策略调整
+
+    # 【自由】智能决策配置
+    intelligent-decision:
+      enable-query-analysis: true
+      enable-complexity-assessment: true
+      enable-strategy-recommendation: true
+      confidence-threshold: 0.3         # 降低置信度阈值，更积极使用工具
+
+    # 【宽松】质量保证配置
+    quality-assurance:
+      enable-response-validation: true
+      enable-tool-result-verification: false  # 关闭严格验证
+      enable-consistency-check: false         # 关闭一致性检查
+      max-retry-on-inconsistency: 1
+
+
+# 【简化】日志配置
+logging:
+  level:
+    com.eeg: INFO
+    com.eeg.service.AIModelService: INFO
+    com.eeg.service.MCPToolRegistry: INFO
+    com.eeg.controller.AIQueryController: INFO
+    root: WARN
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# 【可选】管理端点配置
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized

@@ -1,0 +1,1504 @@
+// 增强版：完整MCP工具集成控制器
+package com.eeg.controller;
+
+import com.eeg.config.AIModelConfig;
+import com.eeg.entity.EEGSession;
+import com.eeg.service.AIModelService;
+import com.eeg.service.AIModelService.AIResponse;
+import com.eeg.service.ConversationHistoryService;
+import com.eeg.service.ConversationHistoryService.ConversationSession;
+import com.eeg.service.EEGSessionService;
+import com.eeg.service.MCPToolRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import lombok.Data;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+
+import jakarta.servlet.http.HttpSession;
+
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+
+import java.util.stream.Collectors;
+import java.util.regex.Pattern;
+
+/**
+ * 增强版AI查询控制器 - 完整的MCP工具集成和智能协作
+ * 核心功能：智能工具协作、对话会话管理、上下文保持、工具使用指导
+ */
+@Slf4j
+@RestController
+@RequestMapping("/api/ai")
+@RequiredArgsConstructor
+public class AIQueryController {
+
+    private final AIModelService aiModelService;
+    private final EEGSessionService sessionService;
+    private final MCPToolRegistry mcpToolRegistry;
+    private final ConversationHistoryService conversationHistoryService;
+
+    @Autowired
+    private AIModelConfig aiModelConfig;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    // 工具协作模式识别
+    private static final Map<String, Pattern> COLLABORATION_PATTERNS = Map.of(
+            "COMPARISON", Pattern.compile("(?i)(对比|比较|差异|区别|哪个更好|最优|最佳)", Pattern.CASE_INSENSITIVE),
+            "COMPREHENSIVE", Pattern.compile("(?i)(全面|详细|深入|完整|综合|深度|彻底)", Pattern.CASE_INSENSITIVE),
+            "QUALITY_FOCUS", Pattern.compile("(?i)(质量|稳定|噪声|干扰|可靠|准确)", Pattern.CASE_INSENSITIVE),
+            "TEMPORAL_ANALYSIS", Pattern.compile("(?i)(趋势|变化|时间|历史|发展|演变)", Pattern.CASE_INSENSITIVE),
+            "TECHNICAL_DEEP_DIVE", Pattern.compile("(?i)(技术|参数|规格|配置|采样|通道)", Pattern.CASE_INSENSITIVE),
+            "RESEARCH_ORIENTED", Pattern.compile("(?i)(研究|分析|评估|调查|探索|发现)", Pattern.CASE_INSENSITIVE)
+    );
+
+    // 15个核心工具分类 - 与MCPToolRegistry完全对应
+    private static final Map<String, Set<String>> MCP_TOOL_CATEGORIES = Map.of(
+            "PRIMARY_TOOLS", Set.of(
+                    "getActiveSessionContext", "queryLatestBandPowerData", "generateComprehensiveSessionSummary"
+            ),
+            "SECONDARY_TOOLS", Set.of(
+                    "getSessionDetails", "monitorSignalQuality", "getUserStatistics"
+            ),
+            "AUXILIARY_TOOLS", Set.of(
+                    "queryRawEEGData", "queryFilteredEEGData", "assessSessionDataVolume"
+            ),
+            "SPECIALIZED_TOOLS", Set.of(
+                    "compareSessionDataQuality", "querySessionsByConditions",
+                    "getSessionTechnicalSpecs", "getSessionHistory"
+            ),
+            "AI_AUTONOMOUS_TOOLS", Set.of("executeCustomQuery"),
+            "TIME_QUERY_TOOLS", Set.of("queryDataByTimeRange")  // 新增时间查询
+    );
+
+    /**
+     * 核心AI查询处理接口 - 增强版MCP工具集成
+     */
+    @PostMapping("/query")
+    public Mono<ResponseEntity<Object>> processUserQuery(@RequestBody AIQueryRequest request,
+                                                         HttpSession httpSession) {
+        Long userId = (Long) httpSession.getAttribute("userId");
+        if (userId == null) {
+            return Mono.just(ResponseEntity.status(401).body(createErrorResponse("用户未登录", null)));
+        }
+
+        if (request == null || request.getQuery() == null || request.getQuery().trim().isEmpty()) {
+            return Mono.just(ResponseEntity.badRequest()
+                    .body(createErrorResponse("查询内容不能为空", userId)));
+        }
+
+        String userQuery = request.getQuery().trim();
+        String sessionId = request.getSessionId();
+        long startTime = System.currentTimeMillis();
+
+        log.info("收到AI查询请求 - 用户ID: {}, 会话ID: {}, 查询长度: {} 字符",
+                userId, sessionId, userQuery.length());
+        log.debug("查询内容: {}", userQuery);
+
+        try {
+            // 处理会话ID - 如果没有提供，创建新会话
+            if (sessionId == null || sessionId.trim().isEmpty()) {
+                log.info("未提供会话ID，创建新对话会话 - 用户: {}", userId);
+                ConversationSession newSession = conversationHistoryService.createNewConversationSession(userId);
+                sessionId = newSession.getSessionId();
+                log.info("新会话已创建 - 会话ID: {}", sessionId);
+            }
+
+            final String finalSessionId = sessionId;
+
+            // 构建增强版智能协作上下文 - 包含完整的MCP工具集成信息
+            Map<String, Object> context = buildEnhancedIntelligentContext(userId, request, userQuery);
+            context.put("conversationSessionId", finalSessionId);
+
+            log.info("增强版智能协作上下文构建完成 - 包含 {} 个字段，协作策略: {}，会话ID: {}，MCP工具集成: {}",
+                    context.size(), context.get("collaborationStrategy"), finalSessionId, context.get("mcpToolsReady"));
+
+            // 调用AI服务处理查询
+            return aiModelService.processUserQuery(userId, userQuery, context)
+                    .map(aiResponse -> {
+                        long endTime = System.currentTimeMillis();
+                        long processingDuration = endTime - startTime;
+
+                        if (aiResponse.success()) {
+                            // 分析工具协作情况
+                            Map<String, Object> collaborationStats = analyzeEnhancedToolCollaboration(aiResponse);
+
+                            log.info("AI查询成功 - 用户ID: {}, 会话ID: {}, 处理时长: {}ms, 工具协作统计: {}",
+                                    userId, finalSessionId, processingDuration, collaborationStats);
+
+                            // 保存对话记录到会话
+                            try {
+                                saveEnhancedConversationToSession(finalSessionId, userId, userQuery, aiResponse,
+                                        context, processingDuration, collaborationStats);
+                            } catch (Exception e) {
+                                log.error("保存对话记录失败 - 会话ID: {}, 用户ID: {}, 但AI查询正常完成",
+                                        finalSessionId, userId, e);
+                            }
+
+                            return ResponseEntity.ok(createEnhancedSuccessResponse(aiResponse, userId, finalSessionId,
+                                    userQuery, collaborationStats));
+                        } else {
+                            log.warn("AI查询失败 - 用户ID: {}, 会话ID: {}, 错误: {}",
+                                    userId, finalSessionId, aiResponse.content());
+
+                            try {
+                                saveFailedConversationToSession(finalSessionId, userId, userQuery,
+                                        aiResponse.content(), processingDuration);
+                            } catch (Exception e) {
+                                log.error("保存失败对话记录出错 - 会话ID: {}, 用户ID: {}", finalSessionId, userId, e);
+                            }
+
+                            return ResponseEntity.badRequest()
+                                    .body(createErrorResponse("AI处理失败: " + aiResponse.content(), userId));
+                        }
+                    })
+                    .onErrorResume(error -> {
+                        long endTime = System.currentTimeMillis();
+                        long processingDuration = endTime - startTime;
+
+                        log.error("AI查询处理异常 - 用户ID: {}, 会话ID: {}, 查询: {}, 处理时长: {}ms",
+                                userId, finalSessionId, userQuery, processingDuration, error);
+
+                        try {
+                            saveFailedConversationToSession(finalSessionId, userId, userQuery,
+                                    "服务器内部错误: " + error.getMessage(), processingDuration);
+                        } catch (Exception e) {
+                            log.error("保存异常对话记录出错 - 会话ID: {}, 用户ID: {}", finalSessionId, userId, e);
+                        }
+
+                        return Mono.just(ResponseEntity.internalServerError()
+                                .body(createErrorResponse("服务器内部错误: " + error.getMessage(), userId)));
+                    });
+
+        } catch (Exception e) {
+            long processingDuration = System.currentTimeMillis() - startTime;
+            log.error("AI查询预处理失败 - 用户ID: {}", userId, e);
+
+            return Mono.just(ResponseEntity.internalServerError()
+                    .body(createErrorResponse("请求处理失败: " + e.getMessage(), userId)));
+        }
+    }
+
+    /**
+     * 构建智能协作上下文 - 工具信息由MCPToolRegistry提供
+     */
+    private Map<String, Object> buildEnhancedIntelligentContext(Long userId, AIQueryRequest request, String userQuery) {
+        Map<String, Object> context = new HashMap<>();
+
+        try {
+            // 基础信息
+            context.put("userId", userId);
+            context.put("currentTime", LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+            context.put("timezone", "UTC");
+
+            // 查询复杂度分析
+            QueryComplexityAnalysis complexity = analyzeQueryComplexity(userQuery);
+            context.put("queryComplexityAnalysis", complexity);
+
+            // 智能协作策略
+            CollaborationStrategy collaborationStrategy = determineEnhancedCollaborationStrategy(userQuery, complexity);
+            context.put("collaborationStrategy", collaborationStrategy);
+
+            // 场景相关的系统提示词
+            String scenario = determineQueryScenario(userQuery);
+            context.put("scenarioContext", scenario);
+            context.put("contextualSystemPrompt", aiModelConfig.getContextualPrompt(scenario));
+
+            // MCP工具集成信息 - 从MCPToolRegistry动态获取
+            context.put("mcpToolsReady", true);
+            context.put("mcpToolsIntegrated", buildMCPToolsIntegrationInfo());
+
+            // 构建会话上下文
+            buildEnhancedSessionContext(userId, request, context, userQuery);
+
+            // 工具选择指导 - 基于实际可用工具
+            buildToolSelectionGuidance(context, collaborationStrategy, userQuery);
+
+            // 数据处理策略
+            buildDataProcessingStrategy(userId, context, complexity);
+
+            // 性能优化配置
+            buildPerformanceOptimizationConfig(context, collaborationStrategy);
+
+            // 请求特定上下文
+            if (request != null && request.getContext() != null) {
+                context.putAll(request.getContext());
+            }
+
+            log.debug("简化版智能协作上下文构建完成 - 字段数: {}, 协作类型: {}, 预期工具数: {}, MCP集成: {}",
+                    context.size(), collaborationStrategy.getType(), collaborationStrategy.getExpectedToolCount(),
+                    context.get("mcpToolsReady"));
+
+        } catch (Exception e) {
+            log.warn("构建智能协作上下文时出现错误", e);
+            // 确保至少有基础上下文
+            context.put("userId", userId);
+            context.put("currentTime", LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+            context.put("contextError", "构建上下文时出现部分错误: " + e.getMessage());
+            context.put("mcpToolsReady", false);
+        }
+
+        return context;
+    }
+
+    /**
+     * 构建MCP工具集成信息 - 从MCPToolRegistry动态获取
+     */
+    private Map<String, Object> buildMCPToolsIntegrationInfo() {
+        Map<String, Object> toolsInfo = new HashMap<>();
+
+        try {
+            // 从MCPToolRegistry获取所有可用工具
+            List<Map<String, Object>> availableTools = mcpToolRegistry.getAllToolsForAI();
+            toolsInfo.put("totalToolsCount", availableTools.size());
+            toolsInfo.put("toolsReady", true);
+
+            // 提取工具名称和描述
+            Map<String, String> toolCapabilities = new HashMap<>();
+            for (Map<String, Object> tool : availableTools) {
+                if (tool.containsKey("function")) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> function = (Map<String, Object>) tool.get("function");
+                    String name = (String) function.get("name");
+                    String description = (String) function.get("description");
+                    toolCapabilities.put(name, description);
+                }
+            }
+            toolsInfo.put("toolCapabilities", toolCapabilities);
+
+            // 工具使用统计（可选）
+            toolsInfo.put("integrationTimestamp", LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+
+        } catch (Exception e) {
+            log.warn("构建MCP工具集成信息失败", e);
+            toolsInfo.put("toolsReady", false);
+            toolsInfo.put("error", e.getMessage());
+        }
+
+        return toolsInfo;
+    }
+
+    /**
+     * 构建工具选择指导 - 基于动态工具信息
+     */
+    private void buildToolSelectionGuidance(Map<String, Object> context, CollaborationStrategy strategy, String userQuery) {
+        Map<String, Object> guidance = new HashMap<>();
+
+        guidance.put("collaborationType", strategy.getType());
+        guidance.put("expectedToolRange", strategy.getMinTools() + "-" + strategy.getMaxTools());
+        guidance.put("executionMode", strategy.getExecutionMode());
+        guidance.put("requiredTools", strategy.getRequiredTools());
+
+        // 智能工具推荐 - 基于查询内容
+        List<String> recommendedTools = generateToolRecommendations(userQuery, strategy);
+        guidance.put("recommendedTools", recommendedTools);
+
+        // 协作模式建议
+        guidance.put("collaborationPattern", determineCollaborationPattern(strategy));
+
+        // 工具使用优先级指导
+        guidance.put("toolPriorities", Map.of(
+                "PRIMARY_FIRST", "优先使用主要工具获取核心数据",
+                "SECONDARY_SUPPORT", "使用次要工具提供支撑分析",
+                "AUXILIARY_DETAIL", "使用辅助工具获取细节信息",
+                "SPECIALIZED_ADVANCED", "使用专业工具进行高级分析"
+        ));
+
+        context.put("toolSelectionGuidance", guidance);
+    }
+
+    /**
+     * 生成工具推荐 - 基于查询内容的智能推荐
+     */
+    private List<String> generateToolRecommendations(String userQuery, CollaborationStrategy strategy) {
+        List<String> recommendations = new ArrayList<>();
+        String query = userQuery.toLowerCase();
+
+        // 基于查询内容的智能推荐
+        if (containsAny(query, "最新", "现在", "当前")) {
+            recommendations.add("getActiveSessionContext");
+            if (containsAny(query, "频谱", "频段", "功率")) {
+                recommendations.add("queryLatestBandPowerData");
+            }
+        }
+
+        if (containsAny(query, "对比", "比较")) {
+            recommendations.add("getSessionHistory");
+            recommendations.add("compareSessionDataQuality");
+        }
+
+        if (containsAny(query, "全面", "详细", "深入")) {
+            recommendations.add("assessSessionDataVolume");
+            recommendations.add("generateComprehensiveSessionSummary");
+        }
+
+        if (containsAny(query, "质量", "稳定")) {
+            recommendations.add("monitorSignalQuality");
+        }
+
+        if (containsAny(query, "技术", "参数", "规格")) {
+            recommendations.add("getSessionTechnicalSpecs");
+        }
+
+        if (containsAny(query, "筛选", "条件", "符合")) {
+            recommendations.add("querySessionsByConditions");
+        }
+
+        if (containsAny(query, "历史", "记录", "所有")) {
+            recommendations.add("getSessionHistory");
+        }
+
+        if (containsAny(query, "原始", "时间序列")) {
+            recommendations.add("queryRawEEGData");
+        }
+
+        if (containsAny(query, "滤波", "清洁")) {
+            recommendations.add("queryFilteredEEGData");
+        }
+
+        if (containsAny(query, "统计", "总计", "平均")) {
+            recommendations.add("getUserStatistics");
+        }
+
+        if (containsAny(query, "时间", "范围")) {
+            recommendations.add("queryDataByTimeRange");
+        }
+
+        // 确保推荐数量符合策略
+        if (recommendations.size() < strategy.getMinTools()) {
+            if (!recommendations.contains("getUserStatistics")) {
+                recommendations.add("getUserStatistics");
+            }
+            if (!recommendations.contains("getSessionDetails") && strategy.getMinTools() > 2) {
+                recommendations.add("getSessionDetails");
+            }
+        }
+
+        // 如果标准工具无法满足，推荐自定义SQL
+        if (containsAny(query, "复杂", "特殊", "自定义") || strategy.getType() == CollaborationType.MULTI_TOOL_RESEARCH) {
+            recommendations.add("executeCustomQuery");
+        }
+
+        return recommendations.stream().distinct().limit(strategy.getMaxTools()).collect(Collectors.toList());
+    }
+
+    /**
+     * 根据用户查询确定场景类型
+     */
+    private String determineQueryScenario(String userQuery) {
+        return aiModelConfig.recommendScenario(userQuery);
+    }
+
+    /**
+     * 确定协作策略
+     */
+    private CollaborationStrategy determineEnhancedCollaborationStrategy(String userQuery, QueryComplexityAnalysis complexity) {
+        CollaborationStrategy strategy = new CollaborationStrategy();
+        String query = userQuery.toLowerCase();
+
+        // 根据关键词模式确定协作类型
+        for (Map.Entry<String, Pattern> entry : COLLABORATION_PATTERNS.entrySet()) {
+            if (entry.getValue().matcher(query).find()) {
+                strategy.addCollaborationType(entry.getKey());
+            }
+        }
+
+        // 根据复杂度确定工具数量和执行模式
+        switch (complexity.getLevel()) {
+            case VERY_HIGH:
+                strategy.setExpectedToolCount(5, 10);
+                strategy.setExecutionMode(ExecutionMode.MIXED);
+                strategy.setType(CollaborationType.MULTI_TOOL_RESEARCH);
+                break;
+            case HIGH:
+                strategy.setExpectedToolCount(3, 6);
+                strategy.setExecutionMode(ExecutionMode.SEQUENTIAL);
+                strategy.setType(CollaborationType.MULTI_TOOL_ANALYSIS);
+                break;
+            case MEDIUM:
+                strategy.setExpectedToolCount(2, 4);
+                strategy.setExecutionMode(ExecutionMode.SEQUENTIAL);
+                strategy.setType(CollaborationType.DUAL_TOOL_COMBO);
+                break;
+            case LOW:
+            case VERY_LOW:
+            default:
+                strategy.setExpectedToolCount(1, 2);
+                strategy.setExecutionMode(ExecutionMode.SINGLE);
+                strategy.setType(CollaborationType.SINGLE_TOOL_DIRECT);
+                break;
+        }
+
+        // 特殊场景工具推荐 - 基于15个核心工具
+        addIntelligentToolRecommendations(strategy, query);
+
+        return strategy;
+    }
+
+    /**
+     * 智能工具推荐
+     */
+    private void addIntelligentToolRecommendations(CollaborationStrategy strategy, String query) {
+        // 实时状态查询
+        if (containsAny(query, "当前", "现在", "正在", "活跃", "实时")) {
+            strategy.addRequiredTool("getActiveSessionContext");
+        }
+
+        // 频谱数据查询
+        if (containsAny(query, "最新", "频谱", "频段", "功率", "alpha", "beta", "theta", "delta", "gamma")) {
+            strategy.addRequiredTool("queryLatestBandPowerData");
+        }
+
+        // 质量相关查询
+        if (containsAny(query, "质量", "稳定", "噪声", "干扰", "可靠")) {
+            strategy.addRequiredTool("monitorSignalQuality");
+        }
+
+        // 对比分析查询
+        if (containsAny(query, "对比", "比较", "哪个", "最好", "差异")) {
+            strategy.addRequiredTool("compareSessionDataQuality");
+            strategy.addRequiredTool("getSessionHistory");
+        }
+
+        // 历史数据查询
+        if (containsAny(query, "历史", "记录", "所有会话", "以前")) {
+            strategy.addRequiredTool("getSessionHistory");
+        }
+
+        // 技术规格查询
+        if (containsAny(query, "技术", "参数", "规格", "配置", "采样")) {
+            strategy.addRequiredTool("getSessionTechnicalSpecs");
+        }
+
+        // 综合分析查询
+        if (containsAny(query, "全面", "详细", "深入", "完整", "综合")) {
+            strategy.addRequiredTool("generateComprehensiveSessionSummary");
+            strategy.addRequiredTool("assessSessionDataVolume");
+        }
+
+        // 原始数据查询
+        if (containsAny(query, "原始", "raw", "时间序列")) {
+            strategy.addRequiredTool("queryRawEEGData");
+        }
+
+        // 滤波数据查询
+        if (containsAny(query, "滤波", "filtered", "清洁")) {
+            strategy.addRequiredTool("queryFilteredEEGData");
+        }
+
+        // 统计信息查询
+        if (containsAny(query, "统计", "总计", "平均", "使用情况")) {
+            strategy.addRequiredTool("getUserStatistics");
+        }
+
+        // 条件筛选查询
+        if (containsAny(query, "筛选", "条件", "符合", "满足")) {
+            strategy.addRequiredTool("querySessionsByConditions");
+        }
+
+        // 自定义查询
+        if (containsAny(query, "复杂", "自定义", "特殊", "sql")) {
+            strategy.addRequiredTool("executeCustomQuery");
+        }
+    }
+
+    /**
+     * 构建会话上下文
+     */
+    private void buildEnhancedSessionContext(Long userId, AIQueryRequest request, Map<String, Object> context, String userQuery) {
+        try {
+            // 获取活跃会话信息
+            try {
+                Optional<EEGSession> activeSession = sessionService.getActiveSession(userId);
+                if (activeSession.isPresent()) {
+                    EEGSession session = activeSession.get();
+                    Map<String, Object> sessionInfo = buildSessionContextInfo(session);
+                    sessionInfo.put("isCurrentlyActive", true);
+                    sessionInfo.put("realTimeDuration", session.calculateDurationSeconds());
+                    sessionInfo.put("selectionReason", "当前活跃会话");
+
+                    context.put("activeSession", sessionInfo);
+                    context.put("hasActiveSession", true);
+
+                    log.info("找到活跃会话 - ID: {}, 开始时间: {}",
+                            session.getId(), session.getSessionStartTimeUtc());
+                } else {
+                    context.put("hasActiveSession", false);
+                    log.debug("用户 {} 没有活跃会话", userId);
+                }
+            } catch (Exception e) {
+                log.debug("获取活跃会话失败", e);
+                context.put("hasActiveSession", false);
+            }
+
+            // 修复：获取最近会话历史，确保按正确顺序排列
+            try {
+                // 先尝试获取真正最新的会话
+                Optional<EEGSession> mostRecentSession = sessionService.getUserMostRecentSession(userId);
+                if (mostRecentSession.isPresent()) {
+                    EEGSession latestSession = mostRecentSession.get();
+                    Map<String, Object> latestSessionInfo = buildSessionContextInfo(latestSession);
+                    latestSessionInfo.put("isLatestSession", true);
+                    latestSessionInfo.put("selectionReason", "按创建时间最新的会话");
+
+                    context.put("latestSession", latestSessionInfo);
+                    context.put("hasLatestSession", true);
+
+                    log.info("找到最新会话 - ID: {}, 创建时间: {}, 状态: {}",
+                            latestSession.getId(), latestSession.getCreatedAt(), latestSession.getSessionStatus());
+                }
+
+                // 获取最近会话列表
+                List<EEGSession> recentSessions = sessionService.getUserSessionHistory(userId, 5);
+                if (!recentSessions.isEmpty()) {
+                    List<Map<String, Object>> sessionSummary = recentSessions.stream()
+                            .map(session -> {
+                                Map<String, Object> info = buildSessionContextInfo(session);
+                                // 标记最新的会话
+                                info.put("isNewest", session.getId().equals(recentSessions.get(0).getId()));
+                                return info;
+                            })
+                            .limit(5)
+                            .toList();
+
+                    context.put("recentSessions", sessionSummary);
+                    context.put("recentSessionsCount", sessionSummary.size());
+
+                    // 明确指出哪个是最新会话
+                    EEGSession newestSession = recentSessions.get(0);
+                    context.put("newestSessionId", newestSession.getId());
+                    context.put("newestSessionInfo", Map.of(
+                            "id", newestSession.getId(),
+                            "createdAt", newestSession.getCreatedAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                            "status", newestSession.getSessionStatus().toString(),
+                            "duration", newestSession.calculateDurationSeconds()
+                    ));
+
+                    log.info("最近会话列表构建完成 - 最新会话ID: {}, 共{}个会话",
+                            newestSession.getId(), sessionSummary.size());
+                } else {
+                    context.put("recentSessionsCount", 0);
+                    context.put("noSessionsFound", true);
+                    log.warn("用户 {} 没有找到任何会话", userId);
+                }
+            } catch (Exception e) {
+                log.error("获取会话历史失败 - 用户ID: {}", userId, e);
+                context.put("recentSessionsCount", 0);
+            }
+
+            // 获取用户统计信息
+            try {
+                EEGSessionService.SessionStatistics stats = sessionService.getUserSessionStatistics(userId);
+                context.put("userStats", Map.of(
+                        "totalSessions", stats.totalSessions,
+                        "completedSessions", stats.completedSessions,
+                        "activeSessions", stats.activeSessions,
+                        "avgDurationSeconds", stats.avgDurationSeconds,
+                        "hasAnyData", stats.totalSessions > 0,
+                        "dataQuality", assessOverallDataQuality(stats)
+                ));
+            } catch (Exception e) {
+                log.debug("获取用户统计失败", e);
+                context.put("userStats", Map.of("hasAnyData", false));
+            }
+
+        } catch (Exception e) {
+            log.warn("构建会话上下文时出现错误", e);
+            context.put("sessionContextError", "构建会话上下文失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 评估整体数据质量
+     */
+    private String assessOverallDataQuality(EEGSessionService.SessionStatistics stats) {
+        if (stats.totalSessions == 0) return "无数据";
+
+        double completionRate = (double) stats.completedSessions / stats.totalSessions;
+        if (completionRate > 0.8 && stats.avgDurationSeconds > 300) {
+            return "优秀";
+        } else if (completionRate > 0.6 && stats.avgDurationSeconds > 180) {
+            return "良好";
+        } else if (completionRate > 0.4) {
+            return "一般";
+        } else {
+            return "需要改善";
+        }
+    }
+
+    /**
+     * 构建增强版工具选择指导
+     */
+    private void buildEnhancedToolSelectionGuidance(Map<String, Object> context, CollaborationStrategy strategy, String userQuery) {
+        Map<String, Object> guidance = new HashMap<>();
+
+        guidance.put("collaborationType", strategy.getType());
+        guidance.put("expectedToolRange", strategy.getMinTools() + "-" + strategy.getMaxTools());
+        guidance.put("executionMode", strategy.getExecutionMode());
+        guidance.put("requiredTools", strategy.getRequiredTools());
+
+        // 智能工具推荐
+        List<String> recommendedTools = generateEnhancedToolRecommendations(userQuery, strategy);
+        guidance.put("recommendedTools", recommendedTools);
+
+        // 协作模式建议
+        guidance.put("collaborationPattern", determineCollaborationPattern(strategy));
+
+        // 15个工具的完整分类
+        guidance.put("toolCategories", MCP_TOOL_CATEGORIES);
+
+        // 工具使用优先级指导
+        guidance.put("toolPriorities", Map.of(
+                "PRIMARY_FIRST", "优先使用主要工具获取核心数据",
+                "SECONDARY_SUPPORT", "使用次要工具提供支撑分析",
+                "AUXILIARY_DETAIL", "使用辅助工具获取细节信息",
+                "SPECIALIZED_ADVANCED", "使用专业工具进行高级分析",
+                "AI_AUTONOMOUS_COMPLEX", "使用AI自主工具处理复杂查询"
+        ));
+
+        // 工具协作建议
+        Map<String, List<String>> collaborationSuggestions = new HashMap<>();
+        collaborationSuggestions.put("实时监控组合", List.of("getActiveSessionContext", "monitorSignalQuality"));
+        collaborationSuggestions.put("频域分析组合", List.of("queryLatestBandPowerData", "assessSessionDataVolume"));
+        collaborationSuggestions.put("质量评估组合", List.of("monitorSignalQuality", "getSessionTechnicalSpecs"));
+        collaborationSuggestions.put("对比研究组合", List.of("compareSessionDataQuality", "getSessionHistory"));
+        collaborationSuggestions.put("综合研究组合", List.of("generateComprehensiveSessionSummary", "getUserStatistics"));
+        guidance.put("collaborationSuggestions", collaborationSuggestions);
+
+        context.put("enhancedToolSelectionGuidance", guidance);
+    }
+
+    /**
+     * 生成增强版工具推荐
+     */
+    private List<String> generateEnhancedToolRecommendations(String userQuery, CollaborationStrategy strategy) {
+        List<String> recommendations = new ArrayList<>();
+        String query = userQuery.toLowerCase();
+
+        // 基于查询内容的智能推荐
+        if (containsAny(query, "最新", "现在", "当前")) {
+            recommendations.add("getActiveSessionContext");
+            if (containsAny(query, "频谱", "频段", "功率")) {
+                recommendations.add("queryLatestBandPowerData");
+            }
+        }
+
+        if (containsAny(query, "对比", "比较")) {
+            recommendations.add("getSessionHistory");
+            recommendations.add("compareSessionDataQuality");
+        }
+
+        if (containsAny(query, "全面", "详细", "深入")) {
+            recommendations.add("assessSessionDataVolume");
+            recommendations.add("generateComprehensiveSessionSummary");
+        }
+
+        if (containsAny(query, "质量", "稳定")) {
+            recommendations.add("monitorSignalQuality");
+        }
+
+        if (containsAny(query, "技术", "参数", "规格")) {
+            recommendations.add("getSessionTechnicalSpecs");
+        }
+
+        if (containsAny(query, "筛选", "条件", "符合")) {
+            recommendations.add("querySessionsByConditions");
+        }
+
+        if (containsAny(query, "历史", "记录", "所有")) {
+            recommendations.add("getSessionHistory");
+        }
+
+        if (containsAny(query, "原始", "时间序列")) {
+            recommendations.add("queryRawEEGData");
+        }
+
+        if (containsAny(query, "滤波", "清洁")) {
+            recommendations.add("queryFilteredEEGData");
+        }
+
+        if (containsAny(query, "统计", "总计", "平均")) {
+            recommendations.add("getUserStatistics");
+        }
+
+        // 确保推荐数量符合策略
+        if (recommendations.size() < strategy.getMinTools()) {
+            if (!recommendations.contains("getUserStatistics")) {
+                recommendations.add("getUserStatistics");
+            }
+            if (!recommendations.contains("getSessionDetails") && strategy.getMinTools() > 2) {
+                recommendations.add("getSessionDetails");
+            }
+        }
+
+        // 如果标准工具无法满足，推荐自定义SQL
+        if (containsAny(query, "复杂", "特殊", "自定义") || strategy.getType() == CollaborationType.MULTI_TOOL_RESEARCH) {
+            recommendations.add("executeCustomQuery");
+        }
+
+        return recommendations.stream().distinct().limit(strategy.getMaxTools()).collect(Collectors.toList());
+    }
+
+    /**
+     * 查询复杂度分析 - 简化版
+     */
+    private QueryComplexityAnalysis analyzeQueryComplexity(String userQuery) {
+        QueryComplexityAnalysis analysis = new QueryComplexityAnalysis();
+        String query = userQuery.toLowerCase();
+
+        // 复杂度指标计算
+        int complexityScore = 0;
+
+        // 关键词复杂度
+        if (containsAny(query, "全面", "详细", "深入", "完整", "综合")) complexityScore += 3;
+        if (containsAny(query, "对比", "比较", "分析", "评估")) complexityScore += 2;
+        if (containsAny(query, "所有", "全部", "历史", "趋势")) complexityScore += 2;
+        if (containsAny(query, "质量", "稳定", "技术", "参数")) complexityScore += 1;
+
+        // 数量词复杂度
+        if (query.matches(".*\\d+.*")) complexityScore += 1;
+        if (containsAny(query, "几个", "多个", "各种", "不同")) complexityScore += 2;
+
+        // 时间词复杂度
+        if (containsAny(query, "最近", "历史", "变化", "趋势", "发展")) complexityScore += 1;
+
+        // 问句复杂度
+        long questionMarks = query.chars().filter(ch -> ch == '？' || ch == '?').count();
+        if (questionMarks > 1) complexityScore += 2;
+
+        // 确定复杂度级别
+        if (complexityScore >= 8) {
+            analysis.setLevel(ComplexityLevel.VERY_HIGH);
+            analysis.setDescription("超高复杂度查询，需要多工具深度协作");
+        } else if (complexityScore >= 6) {
+            analysis.setLevel(ComplexityLevel.HIGH);
+            analysis.setDescription("高复杂度查询，需要多工具协作");
+        } else if (complexityScore >= 4) {
+            analysis.setLevel(ComplexityLevel.MEDIUM);
+            analysis.setDescription("中等复杂度查询，可能需要双工具协作");
+        } else if (complexityScore >= 2) {
+            analysis.setLevel(ComplexityLevel.LOW);
+            analysis.setDescription("低复杂度查询，单工具可能足够");
+        } else {
+            analysis.setLevel(ComplexityLevel.VERY_LOW);
+            analysis.setDescription("极简查询，单工具直接解决");
+        }
+
+        analysis.setScore(complexityScore);
+        analysis.setKeywords(extractKeywords(userQuery));
+
+        return analysis;
+    }
+
+    /**
+     * 构建数据处理策略
+     */
+    private void buildDataProcessingStrategy(Long userId, Map<String, Object> context, QueryComplexityAnalysis complexity) {
+        Map<String, Object> strategy = new HashMap<>();
+
+        try {
+            // 根据复杂度确定处理策略
+            switch (complexity.getLevel()) {
+                case VERY_HIGH:
+                    strategy.put("preferredApproach", "multi_tool_orchestration");
+                    strategy.put("dataType", "comprehensive_multi_domain");
+                    strategy.put("samplingStrategy", "intelligent_hierarchical");
+                    strategy.put("allowCustomSQL", true);
+                    break;
+                case HIGH:
+                    strategy.put("preferredApproach", "coordinated_analysis");
+                    strategy.put("dataType", "multi_dimensional");
+                    strategy.put("samplingStrategy", "adaptive_sampling");
+                    strategy.put("allowCustomSQL", true);
+                    break;
+                case MEDIUM:
+                    strategy.put("preferredApproach", "dual_tool_collaboration");
+                    strategy.put("dataType", "focused_analysis");
+                    strategy.put("samplingStrategy", "targeted_sampling");
+                    strategy.put("allowCustomSQL", false);
+                    break;
+                case LOW:
+                case VERY_LOW:
+                default:
+                    strategy.put("preferredApproach", "direct_tool_execution");
+                    strategy.put("dataType", "specific_query");
+                    strategy.put("samplingStrategy", "efficient_direct");
+                    strategy.put("allowCustomSQL", false);
+                    break;
+            }
+
+            strategy.put("performanceOptimization", generatePerformanceHints(context));
+
+            context.put("dataProcessingStrategy", strategy);
+
+        } catch (Exception e) {
+            log.warn("构建数据处理策略失败", e);
+            context.put("strategyError", "数据处理策略构建失败");
+        }
+    }
+
+    /**
+     * 构建性能优化配置
+     */
+    private void buildPerformanceOptimizationConfig(Map<String, Object> context, CollaborationStrategy strategy) {
+        Map<String, Object> config = new HashMap<>();
+
+        config.put("collaborationType", strategy.getType());
+        config.put("expectedToolCount", strategy.getExpectedToolCount());
+        config.put("executionMode", strategy.getExecutionMode());
+
+        // 根据协作类型设置优化参数
+        switch (strategy.getType()) {
+            case MULTI_TOOL_RESEARCH:
+                config.put("enableCaching", true);
+                config.put("enableSmartSampling", true);
+                config.put("timeoutMultiplier", 2.0);
+                break;
+            case MULTI_TOOL_ANALYSIS:
+                config.put("enableCaching", true);
+                config.put("enableSmartSampling", true);
+                config.put("timeoutMultiplier", 1.5);
+                break;
+            case DUAL_TOOL_COMBO:
+                config.put("enableCaching", true);
+                config.put("enableSmartSampling", false);
+                config.put("timeoutMultiplier", 1.2);
+                break;
+            default:
+                config.put("enableCaching", false);
+                config.put("enableSmartSampling", false);
+                config.put("timeoutMultiplier", 1.0);
+                break;
+        }
+
+        context.put("performanceOptimization", config);
+    }
+
+    /**
+     * 确定协作模式
+     */
+    private String determineCollaborationPattern(CollaborationStrategy strategy) {
+        return switch (strategy.getType()) {
+            case SINGLE_TOOL_DIRECT -> "direct_execution";
+            case DUAL_TOOL_COMBO -> "sequential_collaboration";
+            case MULTI_TOOL_ANALYSIS -> "coordinated_analysis";
+            case MULTI_TOOL_RESEARCH -> "research_orchestration";
+            default -> "adaptive_collaboration";
+        };
+    }
+
+    /**
+     * 增强版：分析工具协作情况
+     */
+    private Map<String, Object> analyzeEnhancedToolCollaboration(AIResponse aiResponse) {
+        Map<String, Object> stats = new HashMap<>();
+
+        try {
+            if (aiResponse.toolResults() == null || aiResponse.toolResults().isEmpty()) {
+                stats.put("collaborationType", "no_tools_used");
+                stats.put("toolCount", 0);
+                stats.put("collaborationEfficiency", 0.0);
+                stats.put("qualityAssessment", "no_tools");
+                return stats;
+            }
+
+            List<String> toolsUsed = aiResponse.toolResults().stream()
+                    .map(tr -> tr.functionName())
+                    .distinct()
+                    .collect(Collectors.toList());
+
+            stats.put("toolCount", toolsUsed.size());
+            stats.put("toolsUsed", toolsUsed);
+
+            // 分析协作类型
+            if (toolsUsed.size() == 1) {
+                stats.put("collaborationType", "single_tool");
+            } else if (toolsUsed.size() == 2) {
+                stats.put("collaborationType", "dual_tool_collaboration");
+            } else if (toolsUsed.size() >= 3 && toolsUsed.size() <= 5) {
+                stats.put("collaborationType", "multi_tool_analysis");
+            } else {
+                stats.put("collaborationType", "complex_orchestration");
+            }
+
+            // 分析工具层级分布
+            Map<String, Integer> tierDistribution = new HashMap<>();
+            toolsUsed.forEach(tool -> {
+                String tier = getToolTier(tool);
+                tierDistribution.merge(tier, 1, Integer::sum);
+            });
+            stats.put("tierDistribution", tierDistribution);
+
+            // 协作效率评估
+            double collaborationEfficiency = calculateCollaborationEfficiency(toolsUsed);
+            stats.put("collaborationEfficiency", collaborationEfficiency);
+
+            // 协作质量评估
+            String qualityAssessment = assessCollaborationQuality(toolsUsed, collaborationEfficiency);
+            stats.put("qualityAssessment", qualityAssessment);
+
+            // MCP工具特定分析
+            stats.put("mcpToolsUsed", toolsUsed.size());
+            stats.put("primaryToolsUsed", toolsUsed.stream()
+                    .filter(tool -> MCP_TOOL_CATEGORIES.get("PRIMARY_TOOLS").contains(tool))
+                    .count());
+            stats.put("specializedToolsUsed", toolsUsed.stream()
+                    .filter(tool -> MCP_TOOL_CATEGORIES.get("SPECIALIZED_TOOLS").contains(tool))
+                    .count());
+
+            return stats;
+
+        } catch (Exception e) {
+            log.error("分析增强版工具协作情况时出错", e);
+            stats.put("collaborationType", "analysis_error");
+            stats.put("toolCount", 0);
+            stats.put("collaborationEfficiency", 0.0);
+            stats.put("qualityAssessment", "error");
+            stats.put("error", e.getMessage());
+            return stats;
+        }
+    }
+
+    /**
+     * 计算协作效率
+     */
+    private double calculateCollaborationEfficiency(List<String> toolsUsed) {
+        double efficiency = 0.0;
+
+        // 主工具存在奖励
+        if (toolsUsed.stream().anyMatch(tool -> MCP_TOOL_CATEGORIES.get("PRIMARY_TOOLS").contains(tool))) {
+            efficiency += 0.3;
+        }
+
+        // 工具多样性奖励
+        Set<String> categories = new HashSet<>();
+        toolsUsed.forEach(tool -> {
+            for (Map.Entry<String, Set<String>> entry : MCP_TOOL_CATEGORIES.entrySet()) {
+                if (entry.getValue().contains(tool)) {
+                    categories.add(entry.getKey());
+                    break;
+                }
+            }
+        });
+        efficiency += categories.size() * 0.15;
+
+        // 工具数量平衡性
+        int toolCount = toolsUsed.size();
+        if (toolCount >= 2 && toolCount <= 4) {
+            efficiency += 0.25;
+        } else if (toolCount == 1 || toolCount == 5) {
+            efficiency += 0.15;
+        } else {
+            efficiency += 0.05;
+        }
+
+        // 特殊组合奖励
+        if (toolsUsed.contains("getActiveSessionContext") && toolsUsed.contains("monitorSignalQuality")) {
+            efficiency += 0.1;
+        }
+        if (toolsUsed.contains("getSessionHistory") && toolsUsed.contains("compareSessionDataQuality")) {
+            efficiency += 0.1;
+        }
+        if (toolsUsed.contains("assessSessionDataVolume") && toolsUsed.contains("generateComprehensiveSessionSummary")) {
+            efficiency += 0.1;
+        }
+
+        return Math.min(1.0, efficiency);
+    }
+
+    /**
+     * 评估协作质量
+     */
+    private String assessCollaborationQuality(List<String> toolsUsed, double efficiency) {
+        if (efficiency >= 0.8) {
+            return "excellent";
+        } else if (efficiency >= 0.6) {
+            return "good";
+        } else if (efficiency >= 0.4) {
+            return "fair";
+        } else {
+            return "needs_improvement";
+        }
+    }
+
+    /**
+     * 保存增强版对话记录到会话
+     */
+    private void saveEnhancedConversationToSession(String sessionId, Long userId, String userQuery, AIResponse aiResponse,
+                                                   Map<String, Object> context, long processingDuration,
+                                                   Map<String, Object> collaborationStats) {
+        try {
+            Long eegSessionId = extractEegSessionId(context);
+            List<String> toolsUsed = extractToolsUsed(aiResponse);
+
+            // 安全处理 usage 对象
+            Map<String, Object> enhancedUsage = new HashMap<>();
+            if (aiResponse.usage() != null) {
+                try {
+                    if (aiResponse.usage() instanceof com.fasterxml.jackson.databind.JsonNode) {
+                        Map<String, Object> usageMap = objectMapper.convertValue(aiResponse.usage(), Map.class);
+                        enhancedUsage.putAll(usageMap);
+                    } else if (aiResponse.usage() instanceof Map) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> usageMap = (Map<String, Object>) aiResponse.usage();
+                        enhancedUsage.putAll(usageMap);
+                    } else {
+                        enhancedUsage.put("rawUsage", aiResponse.usage().toString());
+                    }
+                } catch (Exception e) {
+                    log.warn("转换usage数据时出错，使用字符串形式存储: {}", e.getMessage());
+                    enhancedUsage.put("rawUsage", aiResponse.usage().toString());
+                    enhancedUsage.put("conversionError", e.getMessage());
+                }
+            }
+
+            // 添加协作统计信息
+            enhancedUsage.put("collaborationStats", collaborationStats);
+            enhancedUsage.put("toolCollaborationEfficiency", collaborationStats.get("collaborationEfficiency"));
+            enhancedUsage.put("mcpToolsIntegrationSuccess", true);
+
+            conversationHistoryService.saveConversationToSession(
+                    sessionId,
+                    userId,
+                    userQuery,
+                    aiResponse.content(),
+                    eegSessionId,
+                    enhancedUsage,
+                    toolsUsed,
+                    processingDuration
+            );
+
+            log.debug("增强版对话记录已保存到会话 {} - 用户ID: {}, 协作类型: {}, 工具数: {}",
+                    sessionId, userId, collaborationStats.get("collaborationType"), collaborationStats.get("toolCount"));
+
+        } catch (Exception e) {
+            log.error("保存增强版对话记录到会话 {} 时出错 - 用户ID: {}", sessionId, userId, e);
+            // 不要抛出异常，避免影响主要的AI查询响应
+        }
+    }
+
+    /**
+     * 保存失败对话记录到会话
+     */
+    private void saveFailedConversationToSession(String sessionId, Long userId, String userQuery,
+                                                 String errorMessage, long processingDuration) {
+        try {
+            conversationHistoryService.saveConversationToSession(
+                    sessionId,
+                    userId,
+                    userQuery,
+                    "【系统错误】" + errorMessage,
+                    null,
+                    null,
+                    null,
+                    processingDuration
+            );
+
+            log.debug("失败对话记录已保存到会话 {} - 用户ID: {}", sessionId, userId);
+
+        } catch (Exception e) {
+            log.error("保存失败对话记录到会话 {} 时出错 - 用户ID: {}", sessionId, userId, e);
+        }
+    }
+
+    /**
+     * 创建增强版成功响应
+     */
+    private Object createEnhancedSuccessResponse(AIResponse aiResponse, Long userId, String sessionId,
+                                                 String originalQuery, Map<String, Object> collaborationStats) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("timestamp", System.currentTimeMillis());
+        response.put("service", "EEG_AI_Assistant_v3_Enhanced_MCP_Integration");
+        response.put("userId", userId);
+        response.put("sessionId", sessionId);
+        response.put("originalQuery", originalQuery);
+        response.put("content", aiResponse.content());
+        response.put("usage", aiResponse.usage());
+        response.put("aiProcessingComplete", true);
+        response.put("mcpToolsIntegrated", true);
+
+        // 协作分析信息
+        response.put("collaborationAnalysis", collaborationStats);
+
+        if (aiResponse.toolResults() != null && !aiResponse.toolResults().isEmpty()) {
+            List<Map<String, Object>> toolAnalysis = aiResponse.toolResults().stream()
+                    .map(tr -> {
+                        Map<String, Object> toolInfo = new HashMap<>();
+                        toolInfo.put("toolName", tr.functionName());
+                        toolInfo.put("toolTier", getToolTier(tr.functionName()));
+                        toolInfo.put("success", !tr.result().toString().contains("error"));
+                        toolInfo.put("category", getToolCategory(tr.functionName()));
+                        return toolInfo;
+                    })
+                    .collect(Collectors.toList());
+
+            response.put("toolsUsed", toolAnalysis);
+            response.put("totalToolsCount", aiResponse.toolResults().size());
+        }
+
+        return response;
+    }
+
+    /**
+     * 创建错误响应
+     */
+    private Object createErrorResponse(String errorMessage, Long userId) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", false);
+        response.put("error", errorMessage);
+        response.put("timestamp", System.currentTimeMillis());
+        response.put("service", "EEG_AI_Assistant_v3_Enhanced_MCP_Integration");
+        response.put("userId", userId);
+        response.put("mcpToolsIntegrated", false);
+        return response;
+    }
+
+    /**
+     * 获取AI能力描述接口 - 增强版
+     */
+    @GetMapping("/capabilities")
+    public ResponseEntity<Object> getAICapabilities(HttpSession httpSession) {
+        Long userId = (Long) httpSession.getAttribute("userId");
+
+        try {
+            Map<String, Object> capabilities = buildEnhancedCapabilitiesResponse();
+            log.info("返回增强版AI能力描述 - 用户ID: {}", userId);
+            return ResponseEntity.ok(createCapabilitiesSuccessResponse(capabilities, userId));
+
+        } catch (Exception e) {
+            log.error("获取增强版AI能力描述失败", e);
+            return ResponseEntity.internalServerError()
+                    .body(createErrorResponse("获取能力描述失败: " + e.getMessage(), userId));
+        }
+    }
+
+    /**
+     * 构建增强版能力描述响应
+     */
+    private Map<String, Object> buildEnhancedCapabilitiesResponse() {
+        Map<String, Object> capabilities = new HashMap<>();
+
+        capabilities.put("name", "EEG AI智能协作助手");
+        capabilities.put("version", "v3.2-Enhanced-MCP-Integration");
+        capabilities.put("description", "基于通义千问-Max和完整MCP工具协作的专业脑电数据分析AI助手，支持对话会话管理和15个核心分析工具");
+        capabilities.put("provider", "通义千问-Max + 完整MCP工具协作协议v3.2");
+
+        // 核心能力
+        capabilities.put("coreCapabilities", List.of(
+                "对话会话管理 - 支持新建对话、继续历史对话、会话收藏和删除",
+                "智能工具协作决策 - 根据查询复杂度自动选择最优工具组合",
+                "自适应查询分析 - 深度理解用户需求并制定执行策略",
+                "多维度EEG数据分析 - 时域、频域、空间、质量全方位分析",
+                "大数据智能处理 - 自动选择最优数据处理和分析策略",
+                "实时协作监控 - 实时评估工具协作效率和质量",
+                "AI自主SQL执行 - 处理复杂自定义查询需求",
+                "专业神经科学解释 - 基于科学知识的数据解读和建议",
+                "完整MCP工具集成 - 15个专业工具完全集成和协作"
+        ));
+
+        // 会话管理功能
+        capabilities.put("sessionManagement", Map.of(
+                "newConversation", "创建新的对话会话",
+                "continueConversation", "在历史会话中继续对话",
+                "sessionBookmark", "收藏重要的对话会话",
+                "sessionDelete", "删除不需要的对话会话",
+                "sessionHistory", "查看和管理历史对话",
+                "contextAware", "保持对话上下文和连续性",
+                "enhancedIntegration", "完整的MCP工具集成支持"
+        ));
+
+        // 14个核心工具详情  后面需要加入第十五个工具时间点查询工具
+        capabilities.put("mcpToolsComplete", Map.of(
+                "PRIMARY_TOOLS", Map.of(
+                        "getActiveSessionContext", "智能实时会话状态分析",
+                        "queryLatestBandPowerData", "专业频域数据查询和分析",
+                        "generateComprehensiveSessionSummary", "大数据智能摘要分析"
+                ),
+                "SECONDARY_TOOLS", Map.of(
+                        "getSessionDetails", "精确会话信息获取",
+                        "monitorSignalQuality", "实时信号质量监测和评估",
+                        "getUserStatistics", "用户数据统计和洞察"
+                ),
+                "AUXILIARY_TOOLS", Map.of(
+                        "queryRawEEGData", "原始EEG时序数据查询",
+                        "queryFilteredEEGData", "滤波处理数据查询",
+                        "assessSessionDataVolume", "数据量智能评估和策略推荐"
+                ),
+                "SPECIALIZED_TOOLS", Map.of(
+                        "compareSessionDataQuality", "多会话质量对比分析",
+                        "querySessionsByConditions", "条件筛选和会话分析",
+                        "getSessionTechnicalSpecs", "详细技术规格获取",
+                        "getSessionHistory", "完整历史记录管理"
+                ),
+                "AI_AUTONOMOUS", Map.of(
+                        "executeCustomQuery", "AI自主SQL查询执行"
+                )
+        ));
+
+        // 智能协作模式
+        capabilities.put("collaborationModes", Map.of(
+                "SINGLE_TOOL_DIRECT", "单工具直接执行 - 适用于简单精确查询",
+                "DUAL_TOOL_COMBO", "双工具协作 - 适用于关联分析需求",
+                "MULTI_TOOL_ANALYSIS", "多工具分析 - 适用于复杂多维分析",
+                "MULTI_TOOL_RESEARCH", "多工具研究 - 适用于深度科研需求",
+                "ENHANCED_INTEGRATION", "增强集成模式 - 支持所有15个工具的智能协作"
+        ));
+
+        // 技术规格
+        capabilities.put("technicalSpecs", Map.ofEntries(
+                Map.entry("aiModel", "通义千问-Max"),
+                Map.entry("protocol", "智能MCP工具协作协议v3.2-Enhanced"),
+                Map.entry("coreToolsCount", 15),
+                Map.entry("maxToolCollaboration", 10),
+                Map.entry("dataSource", "MySQL + InfluxDB 3.2.1"),
+                Map.entry("realTimeProcessing", true),
+                Map.entry("intelligentDecision", true),
+                Map.entry("collaborationOptimization", true),
+                Map.entry("sessionSupport", true),
+                Map.entry("enhancedIntegration", true),
+                Map.entry("responseFormat", "结构化JSON + 专业EEG解释 + 协作分析 + 会话管理"),
+                Map.entry("conversationHistory", "智能记录所有对话和协作统计，支持完整的会话管理"),
+                Map.entry("mcpToolsIntegrated", "完整集成所有15个专业EEG分析工具")
+        ));
+
+        return capabilities;
+    }
+
+    // ========== 辅助方法 ==========
+
+    /**
+     * 检查文本是否包含任意关键词
+     */
+    private boolean containsAny(String text, String... keywords) {
+        for (String keyword : keywords) {
+            if (text.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 提取关键词
+     */
+    private List<String> extractKeywords(String query) {
+        return Arrays.asList(query.toLowerCase().split("\\s+"));
+    }
+
+    /**
+     * 获取工具层级
+     */
+    private String getToolTier(String toolName) {
+        for (Map.Entry<String, Set<String>> entry : MCP_TOOL_CATEGORIES.entrySet()) {
+            if (entry.getValue().contains(toolName)) {
+                return entry.getKey().toLowerCase();
+            }
+        }
+        return "other";
+    }
+
+    /**
+     * 获取工具类别
+     */
+    private String getToolCategory(String toolName) {
+        for (Map.Entry<String, Set<String>> entry : MCP_TOOL_CATEGORIES.entrySet()) {
+            if (entry.getValue().contains(toolName)) {
+                return entry.getKey();
+            }
+        }
+        return "OTHER";
+    }
+
+    /**
+     * 构建会话上下文信息
+     */
+    private Map<String, Object> buildSessionContextInfo(EEGSession session) {
+        Map<String, Object> info = new HashMap<>();
+        info.put("id", session.getId());
+        info.put("startTimeUtc", session.getSessionStartTimeUtc().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        info.put("endTimeUtc", session.getSessionEndTimeUtc() != null ?
+                session.getSessionEndTimeUtc().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) : null);
+        info.put("createdAt", session.getCreatedAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)); // 添加创建时间
+        info.put("durationSeconds", session.calculateDurationSeconds());
+        info.put("status", session.getSessionStatus().toString());
+        info.put("isCompleted", session.getSessionStatus() == EEGSession.SessionStatus.COMPLETED);
+
+        // 数据统计
+        long totalPackets = (session.getRawStreamTotalPackets() != null ? session.getRawStreamTotalPackets() : 0) +
+                (session.getFiltStreamTotalPackets() != null ? session.getFiltStreamTotalPackets() : 0) +
+                (session.getBandStreamTotalPackets() != null ? session.getBandStreamTotalPackets() : 0);
+        info.put("totalDataPackets", totalPackets);
+        info.put("hasData", totalPackets > 0);
+
+        // 添加更详细的时间信息用于AI判断
+        info.put("timeContext", Map.of(
+                "createdAtTimestamp", session.getCreatedAt().toEpochSecond(java.time.ZoneOffset.UTC),
+                "isRecent", java.time.Duration.between(session.getCreatedAt(), LocalDateTime.now()).toDays() < 7,
+                "ageInHours", java.time.Duration.between(session.getCreatedAt(), LocalDateTime.now()).toHours()
+        ));
+
+        return info;
+    }
+
+    /**
+     * 提取EEG会话ID
+     */
+    private Long extractEegSessionId(Map<String, Object> context) {
+        if (context == null) return null;
+
+        // 尝试从活跃会话中提取
+        if (context.containsKey("activeSession")) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> activeSession = (Map<String, Object>) context.get("activeSession");
+            if (activeSession != null && activeSession.containsKey("id")) {
+                try {
+                    return ((Number) activeSession.get("id")).longValue();
+                } catch (Exception e) {
+                    log.debug("无法解析活跃会话ID", e);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 提取使用的工具列表
+     */
+    private List<String> extractToolsUsed(AIResponse aiResponse) {
+        if (aiResponse.toolResults() == null || aiResponse.toolResults().isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        return aiResponse.toolResults().stream()
+                .map(toolResult -> toolResult.functionName())
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 生成性能提示
+     */
+    private Map<String, Object> generatePerformanceHints(Map<String, Object> context) {
+        Map<String, Object> hints = new HashMap<>();
+
+        try {
+            // 根据用户统计信息提供性能提示
+            if (context.containsKey("userStats")) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> stats = (Map<String, Object>) context.get("userStats");
+
+                long totalSessions = ((Number) stats.get("totalSessions")).longValue();
+
+                if (totalSessions > 100) {
+                    hints.put("recommendCaching", true);
+                    hints.put("useSampling", true);
+                    hints.put("reason", "大量会话数据，建议启用缓存和采样策略");
+                } else if (totalSessions > 50) {
+                    hints.put("recommendCaching", false);
+                    hints.put("useSampling", false);
+                    hints.put("reason", "中等规模数据，使用标准处理策略");
+                } else {
+                    hints.put("recommendCaching", false);
+                    hints.put("useSampling", false);
+                    hints.put("reason", "小规模数据，无需优化策略");
+                }
+
+                hints.put("totalSessionsAnalyzed", totalSessions);
+            }
+        } catch (Exception e) {
+            log.warn("生成性能提示时出现异常", e);
+            hints.put("error", "性能提示生成失败，使用默认策略");
+            hints.put("recommendCaching", false);
+            hints.put("useSampling", false);
+        }
+
+        return hints;
+    }
+
+    /**
+     * 创建能力描述的成功响应
+     */
+    private Object createCapabilitiesSuccessResponse(Map<String, Object> capabilities, Long userId) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("timestamp", System.currentTimeMillis());
+        response.put("service", "EEG_AI_Assistant_v3_Enhanced_MCP_Integration");
+        response.put("userId", userId);
+        response.put("content", capabilities);
+        response.put("mcpToolsIntegrated", true);
+        return response;
+    }
+
+
+    // ========== 数据类定义 ==========
+
+    @Data
+    public static class AIQueryRequest {
+        private String query;
+        private String sessionId; // 新增：对话会话ID
+        private String eegSessionId; // EEG会话ID（可选）
+        private Map<String, Object> context;
+        private String analysisType;
+    }
+
+    @Data
+    public static class QueryComplexityAnalysis {
+        private ComplexityLevel level;
+        private int score;
+        private String description;
+        private List<String> keywords;
+    }
+
+    @Data
+    public static class CollaborationStrategy {
+        private CollaborationType type;
+        private ExecutionMode executionMode;
+        private int minTools;
+        private int maxTools;
+        private List<String> requiredTools = new ArrayList<>();
+        private List<String> collaborationTypes = new ArrayList<>();
+
+        public void setExpectedToolCount(int min, int max) {
+            this.minTools = min;
+            this.maxTools = max;
+        }
+
+        public void addRequiredTool(String tool) {
+            this.requiredTools.add(tool);
+        }
+
+        public void addCollaborationType(String type) {
+            this.collaborationTypes.add(type);
+        }
+
+        public int getExpectedToolCount() {
+            return (minTools + maxTools) / 2;
+        }
+    }
+
+    public enum ComplexityLevel {
+        VERY_LOW, LOW, MEDIUM, HIGH, VERY_HIGH
+    }
+
+    public enum CollaborationType {
+        SINGLE_TOOL_DIRECT,
+        DUAL_TOOL_COMBO,
+        MULTI_TOOL_ANALYSIS,
+        MULTI_TOOL_RESEARCH
+    }
+
+    public enum ExecutionMode {
+        SINGLE,      // 单工具执行
+        SEQUENTIAL,  // 串行协作
+        PARALLEL,    // 并行协作
+        MIXED        // 混合协作
+    }
+}
