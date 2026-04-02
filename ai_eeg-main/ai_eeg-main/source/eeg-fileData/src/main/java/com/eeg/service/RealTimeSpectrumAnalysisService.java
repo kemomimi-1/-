@@ -436,7 +436,9 @@ public class RealTimeSpectrumAnalysisService {
                 try {
                     String timeStringToUse = timeStr.length() > format.length() ?
                             timeStr.substring(0, format.length()) : timeStr;
-                    return LocalDateTime.parse(timeStringToUse, DateTimeFormatter.ofPattern(format));
+                    LocalDateTime parsed = LocalDateTime.parse(timeStringToUse, DateTimeFormatter.ofPattern(format));
+                    // 【关键修复】InfluxDB 存储的是 UTC 时间，转换为北京时间 (UTC+8)
+                    return parsed.plusHours(8);
                 } catch (Exception ignored) {
                     // 继续尝试下一个格式
                 }
@@ -444,7 +446,8 @@ public class RealTimeSpectrumAnalysisService {
 
             // 最后尝试ISO格式
             if (timeStr.contains("T") && timeStr.length() >= 19) {
-                return LocalDateTime.parse(timeStr.substring(0, 19));
+                LocalDateTime parsed = LocalDateTime.parse(timeStr.substring(0, 19));
+                return parsed.plusHours(8);
             }
 
         } catch (Exception e) {
