@@ -126,7 +126,7 @@ public class RealTimeAnalysisController {
     }
 
     /**
-     * 立即执行一次分析
+     * 立即执行一次分析（不会启动持续分析）
      */
     @PostMapping("/analyze-now")
     public ResponseEntity<Object> analyzeNow(HttpSession session) {
@@ -136,7 +136,8 @@ public class RealTimeAnalysisController {
         }
 
         try {
-            analysisService.startRealTimeAnalysis(userId);
+            // 【修复】只执行一次分析，不启动持续分析循环
+            analysisService.performSingleAnalysis(userId);
 
             Map<String, Object> response = createSuccessResponse("立即分析已触发");
             response.put("userId", userId);

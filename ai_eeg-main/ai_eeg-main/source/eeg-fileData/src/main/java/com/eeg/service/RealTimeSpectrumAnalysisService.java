@@ -115,6 +115,18 @@ public class RealTimeSpectrumAnalysisService {
     }
 
     /**
+     * 【新增】执行一次性分析（不启动持续循环）
+     */
+    public void performSingleAnalysis(Long userId) {
+        log.info("用户 {} 触发一次性分析", userId);
+        // 临时初始化起始点（如果没有的话）
+        if (!lastAnalysisTimes.containsKey(userId)) {
+            initializeUserAnalysisStartPoint(userId);
+        }
+        performAnalysisForUser(userId);
+    }
+
+    /**
      * 停止用户的实时分析
      */
     public void stopRealTimeAnalysis(Long userId) {
@@ -198,6 +210,16 @@ public class RealTimeSpectrumAnalysisService {
      * 【重构】获取持续频谱数据 - 确保每次获取不同时间段的数据
      */
     private SpectralData getContinuousSpectralData(Long userId) {
+        return getContinuousSpectralDataWithDepth(userId, 0);
+    }
+
+    private SpectralData getContinuousSpectralDataWithDepth(Long userId, int depth) {
+        // 【修复】防止无限递归，最多重试1次
+        if (depth > 1) {
+            log.warn("用户 {} 数据采样已达最大重试次数，放弃本次分析", userId);
+            return null;
+        }
+
         LocalDateTime lastAnalysisTime = lastAnalysisTimes.get(userId);
 
         if (lastAnalysisTime == null) {
@@ -247,8 +269,8 @@ public class RealTimeSpectrumAnalysisService {
             log.info("用户 {} 历史数据已遍历完毕，重新从最新数据开始循环", userId);
             resetToLatestData(userId);
 
-            // 重新尝试获取数据
-            return getContinuousSpectralData(userId);
+            // 【修复】带深度计数器的重试，防止无限递归
+            return getContinuousSpectralDataWithDepth(userId, depth + 1);
 
         } catch (Exception e) {
             log.error("用户 {} 持续数据采样失败", userId, e);
@@ -436,9 +458,7 @@ public class RealTimeSpectrumAnalysisService {
                 try {
                     String timeStringToUse = timeStr.length() > format.length() ?
                             timeStr.substring(0, format.length()) : timeStr;
-                    LocalDateTime parsed = LocalDateTime.parse(timeStringToUse, DateTimeFormatter.ofPattern(format));
-                    // 【关键修复】InfluxDB 存储的是 UTC 时间，转换为北京时间 (UTC+8)
-                    return parsed.plusHours(8);
+                    return LocalDateTime.parse(timeStringToUse, DateTimeFormatter.ofPattern(format));
                 } catch (Exception ignored) {
                     // 继续尝试下一个格式
                 }
@@ -446,8 +466,7 @@ public class RealTimeSpectrumAnalysisService {
 
             // 最后尝试ISO格式
             if (timeStr.contains("T") && timeStr.length() >= 19) {
-                LocalDateTime parsed = LocalDateTime.parse(timeStr.substring(0, 19));
-                return parsed.plusHours(8);
+                return LocalDateTime.parse(timeStr.substring(0, 19));
             }
 
         } catch (Exception e) {

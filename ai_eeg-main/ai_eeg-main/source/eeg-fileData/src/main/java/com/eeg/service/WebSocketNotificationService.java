@@ -50,7 +50,7 @@ public class WebSocketNotificationService {
                 }
 
             } catch (Exception e) {
-                log.error("发送WebSocket消息失败 - 用户: {}", userId, e.getMessage());
+                log.error("发送WebSocket消息失败 - 用户: {}", userId, e);
             }
         }
     }

@@ -264,10 +264,16 @@ public class InfluxDBService {
         return queryData(query, "json")
                 .map(result -> {
                     try {
-                        // 简单解析JSON获取行数
-                        if (result.contains("row_count")) {
-                            // 这里可以用更精确的JSON解析，但为了简化先用字符串匹配
-                            return 1000L; // 默认值，实际使用时应该解析JSON
+                        if (result == null || result.trim().isEmpty() || "[]".equals(result.trim())) {
+                            return 0L;
+                        }
+                        // 【修复】正确解析 JSON 而不是返回硬编码值
+                        com.fasterxml.jackson.databind.JsonNode node = objectMapper.readTree(result);
+                        if (node.isArray() && node.size() > 0) {
+                            com.fasterxml.jackson.databind.JsonNode firstRow = node.get(0);
+                            if (firstRow.has("row_count")) {
+                                return firstRow.get("row_count").asLong();
+                            }
                         }
                         return 0L;
                     } catch (Exception e) {

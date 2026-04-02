@@ -1729,6 +1729,9 @@
     });
 
     // 初始化弹幕WebSocket连接
+    let wsReconnectAttempts = 0;
+    const WS_MAX_RECONNECT = 5;
+
     function initializeBarrageWebSocket() {
         if (!currentUser) return;
 
@@ -1741,6 +1744,7 @@
 
             barrageWebSocket.onopen = function() {
                 console.log('✅ 弹幕WebSocket连接已成功建立');
+                wsReconnectAttempts = 0; // 连接成功，重置计数器
             };
 
             barrageWebSocket.onmessage = function(event) {
@@ -1759,13 +1763,21 @@
 
             barrageWebSocket.onclose = function(event) {
                 console.warn('⚠️ 弹幕WebSocket连接已关闭, 代码:', event.code, '原因:', event.reason);
-                // 5秒后尝试重连
-                setTimeout(() => {
-                    if (isBarrageActive) {
-                        console.log('尝试重新连接弹幕WebSocket...');
-                        initializeBarrageWebSocket();
-                    }
-                }, 5000);
+                
+                if (isBarrageActive && wsReconnectAttempts < WS_MAX_RECONNECT) {
+                    wsReconnectAttempts++;
+                    // 指数退避：5s → 10s → 20s → 40s → 80s
+                    const delay = Math.min(5000 * Math.pow(2, wsReconnectAttempts - 1), 80000);
+                    console.log(`🔄 将在 ${delay/1000}s 后第 ${wsReconnectAttempts}/${WS_MAX_RECONNECT} 次重连...`);
+                    setTimeout(() => {
+                        if (isBarrageActive) {
+                            initializeBarrageWebSocket();
+                        }
+                    }, delay);
+                } else if (wsReconnectAttempts >= WS_MAX_RECONNECT) {
+                    console.error('❌ WebSocket 重连次数已达上限，已停止重连');
+                    showAlert('warning', '实时推送连接中断，请手动刷新页面');
+                }
             };
 
             barrageWebSocket.onerror = function(error) {
@@ -2162,11 +2174,10 @@
 
         let html = '';
         barrageHistory.forEach(barrage => {
-            // 【时间校准】将后端传来的 UTC 原始字符串适配为本地北京时间
+            // 后端 JVM 已设为 Asia/Shanghai，createdAt 直接就是北京时间，无需再转换
             let timeSource = barrage.createdAt;
-            if (typeof timeSource === 'string' && !timeSource.includes('Z') && !timeSource.includes('+')) {
-                // 如果没有时区标识，且格式类似 ISO，强行补上 Z (UTC) 标识
-                timeSource = timeSource.replace(' ', 'T') + 'Z';
+            if (typeof timeSource === 'string') {
+                timeSource = timeSource.replace(' ', 'T');
             }
             
             const createdTime = new Date(timeSource).toLocaleString('zh-CN', {
@@ -3344,7 +3355,8 @@
         if (!dateTimeString) return '-';
 
         try {
-            const date = new Date(dateTimeString + 'Z');
+            // 后端已使用 Asia/Shanghai，时间无需 UTC 标记
+            const date = new Date(dateTimeString.replace(' ', 'T'));
             return date.toLocaleString('zh-CN', {
                 timeZone: userTimezone,
                 month: '2-digit',
