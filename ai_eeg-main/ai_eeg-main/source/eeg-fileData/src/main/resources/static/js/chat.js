@@ -37,7 +37,7 @@
         }
     }
 
-// 发送消息
+// 发送消息 - 使用SSE流式输出
     async function sendMessage() {
         const chatInput = DOM_CACHE.chatInput;
         const sendButton = DOM_CACHE.sendButton;
@@ -54,21 +54,40 @@
         sendButton.disabled = true;
         isTyping = true;
 
+        // 创建AI消息容器（带思考指示器）
+        const chatMessages = DOM_CACHE.chatMessages;
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message assistant';
+        const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        messageDiv.innerHTML = `
+            <div class="message-avatar">🧠</div>
+            <div class="message-content">
+                <div class="thinking-indicator" id="thinking-status">
+                    <span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span>
+                    AI 思考中
+                </div>
+                <div class="message-bubble" id="stream-content" style="display:none;"></div>
+                <div class="message-meta">
+                    <span class="message-time">${time}</span>
+                    <span class="stream-duration" id="stream-duration" style="display:none;"></span>
+                </div>
+            </div>
+        `;
+        chatMessages.appendChild(messageDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+
         try {
-            const requestBody = {
-                query: message
-            };
+            const requestBody = { query: message };
 
             // 如果有当前对话会话ID，则传递给后端
             if (currentConversationSessionId) {
                 requestBody.sessionId = currentConversationSessionId;
             }
 
-            const response = await fetch(API_ROUTES.CONVERSATIONS.AI_QUERY, {
+            // 使用 fetch 发起SSE流式请求
+            const response = await fetch(API_ROUTES.CONVERSATIONS.AI_QUERY_STREAM, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(requestBody)
             });
 
@@ -77,28 +96,119 @@
                 return;
             }
 
-            const data = await response.json();
+            // 用 ReadableStream 消费SSE事件流
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let fullContent = '';
+            let sseBuffer = '';
+            const contentEl = messageDiv.querySelector('#stream-content');
+            const thinkingEl = messageDiv.querySelector('#thinking-status');
+            const durationEl = messageDiv.querySelector('#stream-duration');
 
-            if (response.ok && data.success) {
-                // 如果是新对话，保存会话ID
-                if (!currentConversationSessionId && data.sessionId) {
-                    currentConversationSessionId = data.sessionId;
-                    DOM_CACHE.chatTitle.textContent = '对话 - ' + data.sessionId.substring(0, 8);
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                sseBuffer += decoder.decode(value, { stream: true });
+
+                // 按行解析SSE事件
+                const lines = sseBuffer.split('\n');
+                sseBuffer = lines.pop(); // 保留未完成的最后一行
+
+                let currentEvent = '';
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (trimmed.startsWith('event:')) {
+                        currentEvent = trimmed.substring(6).trim();
+                    } else if (trimmed.startsWith('data:')) {
+                        const dataStr = trimmed.substring(5).trim();
+                        if (!dataStr) continue;
+
+                        try {
+                            const data = JSON.parse(dataStr);
+                            handleStreamEvent(currentEvent, data, contentEl, thinkingEl, durationEl);
+
+                            if (currentEvent === 'chunk' && data.text) {
+                                fullContent += data.text;
+                            }
+                            if (currentEvent === 'done' && data.sessionId) {
+                                if (!currentConversationSessionId) {
+                                    currentConversationSessionId = data.sessionId;
+                                    DOM_CACHE.chatTitle.textContent = '对话 - ' + data.sessionId.substring(0, 8);
+                                }
+                            }
+                        } catch (e) {
+                            // JSON解析失败，跳过
+                        }
+                    }
                 }
 
-                // 添加AI回复，包括工具使用信息
-                const toolsUsed = data.toolsUsed ? data.toolsUsed.map(t => t.toolName) : [];
-                addMessageToChat('assistant', data.content, toolsUsed, data.collaborationAnalysis);
-            } else {
-                addMessageToChat('assistant', `抱歉，处理您的请求时出现了问题：${data.error || '未知错误'}`);
+                // 保持滚动到底部
+                chatMessages.scrollTop = chatMessages.scrollHeight;
             }
+
         } catch (error) {
-            console.error('发送消息失败:', error);
-            addMessageToChat('assistant', '抱歉，网络连接出现问题，请稍后再试。');
+            console.error('流式消息发送失败:', error);
+            const thinkingEl = messageDiv.querySelector('#thinking-status');
+            if (thinkingEl) thinkingEl.style.display = 'none';
+            const contentEl = messageDiv.querySelector('#stream-content');
+            if (contentEl) {
+                contentEl.style.display = 'block';
+                contentEl.innerHTML = '抱歉，网络连接出现问题，请稍后再试。';
+            }
         } finally {
             sendButton.disabled = false;
             isTyping = false;
-            loadConversationHistory(); // 刷新对话历史
+            loadConversationHistory();
+        }
+    }
+
+    // 处理SSE流事件
+    function handleStreamEvent(eventType, data, contentEl, thinkingEl, durationEl) {
+        switch (eventType) {
+            case 'thinking': {
+                if (data.status === 'started') {
+                    thinkingEl.style.display = 'flex';
+                    if (data.message) {
+                        thinkingEl.innerHTML = `
+                            <span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span>
+                            ${data.message}
+                        `;
+                    }
+                } else if (data.status === 'done') {
+                    const dur = typeof data.duration === 'number' ? data.duration.toFixed(1) : '0';
+                    thinkingEl.innerHTML = `✅ 思考完成 (${dur}s)`;
+                    thinkingEl.classList.add('thinking-done');
+                    // 显示内容区域
+                    contentEl.style.display = 'block';
+                }
+                break;
+            }
+            case 'chunk': {
+                if (data.text) {
+                    // 逐字追加并实时格式化
+                    contentEl.style.display = 'block';
+                    // 获取当前已有的纯文本，拼接新文本后重新格式化
+                    if (!contentEl._rawText) contentEl._rawText = '';
+                    contentEl._rawText += data.text;
+                    contentEl.innerHTML = formatAIResponse(contentEl._rawText);
+                }
+                break;
+            }
+            case 'done': {
+                const total = typeof data.totalTime === 'number' ? data.totalTime.toFixed(1) : '?';
+                durationEl.textContent = `耗时 ${total}s`;
+                durationEl.style.display = 'inline';
+                // 隐藏思考指示器
+                thinkingEl.style.display = 'none';
+                break;
+            }
+            case 'error': {
+                thinkingEl.style.display = 'none';
+                contentEl.style.display = 'block';
+                contentEl.innerHTML = `<span style="color: #ef4444;">⚠️ ${data.message || '请求处理失败'}</span>`;
+                break;
+            }
         }
     }
 

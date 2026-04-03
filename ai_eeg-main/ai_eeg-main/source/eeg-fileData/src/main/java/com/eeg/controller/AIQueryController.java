@@ -8,11 +8,14 @@ import com.eeg.service.ConversationHistoryService.ConversationSession;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
 import com.eeg.service.ai.AIQueryStrategyService;
 import com.eeg.service.ai.AIContextBuilder;
 import com.eeg.entity.ai.*;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import jakarta.servlet.http.HttpSession;
 import java.util.*;
@@ -145,6 +148,104 @@ public class AIQueryController {
         }
     }
 
+
+    /**
+     * 流式AI查询端点 - 返回SSE事件流，实现真正的逐字输出
+     * 事件类型：thinking（思考状态）、chunk（文本片段）、done（完成）
+     * 流结束后自动保存对话到历史会话
+     */
+    @PostMapping(value = "/query-stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> queryStream(@RequestBody AIQueryRequest request,
+                                                      HttpSession httpSession) {
+        Long userId = (Long) httpSession.getAttribute("userId");
+        if (userId == null) {
+            return Flux.just(ServerSentEvent.<String>builder()
+                    .event("error").data("{\"message\":\"用户未登录\"}").build());
+        }
+
+        if (request == null || request.getQuery() == null || request.getQuery().trim().isEmpty()) {
+            return Flux.just(ServerSentEvent.<String>builder()
+                    .event("error").data("{\"message\":\"查询内容不能为空\"}").build());
+        }
+
+        String userQuery = request.getQuery().trim();
+        String sessionId = request.getSessionId();
+        long startTime = System.currentTimeMillis();
+
+        log.info("收到流式AI查询 - 用户ID: {}, 查询长度: {} 字符", userId, userQuery.length());
+
+        try {
+            // 处理会话ID - 如果没有提供，创建新会话
+            if (sessionId == null || sessionId.trim().isEmpty()) {
+                ConversationSession newSession = conversationHistoryService.createNewConversationSession(userId);
+                sessionId = newSession.getSessionId();
+                log.info("流式查询创建新会话 - 会话ID: {}", sessionId);
+            }
+
+            final String finalSessionId = sessionId;
+
+            // 构建上下文
+            Map<String, Object> context = aiContextBuilder.buildEnhancedIntelligentContext(userId, request, userQuery);
+            context.put("conversationSessionId", finalSessionId);
+
+            // 用于累积完整AI回复内容的缓冲区
+            StringBuilder contentBuffer = new StringBuilder();
+
+            // 调用流式处理，并拦截事件以保存会话
+            return aiModelService.processUserQueryStream(userId, userQuery, context)
+                    .doOnNext(event -> {
+                        // 拦截 chunk 事件，累积完整内容
+                        if ("chunk".equals(event.event()) && event.data() != null) {
+                            try {
+                                var node = objectMapper.readTree(event.data());
+                                if (node.has("text")) {
+                                    contentBuffer.append(node.get("text").asText());
+                                }
+                            } catch (Exception e) {
+                                // JSON解析失败，忽略
+                            }
+                        }
+                    })
+                    .map(event -> {
+                        // 在 done 事件中注入 sessionId 并同步保存会话（确保写入完成再通知前端）
+                        if ("done".equals(event.event()) && event.data() != null) {
+                            long duration = System.currentTimeMillis() - startTime;
+                            String fullContent = contentBuffer.toString();
+                            if (!fullContent.isEmpty()) {
+                                try {
+                                    conversationHistoryService.saveConversationToSession(
+                                            finalSessionId, userId, userQuery, fullContent,
+                                            null, null, null, duration
+                                    );
+                                    log.info("流式对话已保存到会话 {} - 用户ID: {}, 内容长度: {}, 耗时: {}ms",
+                                            finalSessionId, userId, fullContent.length(), duration);
+                                } catch (Exception e) {
+                                    log.error("保存流式对话记录失败 - 会话ID: {}, 用户ID: {}", finalSessionId, userId, e);
+                                }
+                            }
+
+                            try {
+                                var node = objectMapper.readTree(event.data());
+                                Map<String, Object> doneData = objectMapper.convertValue(node,
+                                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+                                doneData.put("sessionId", finalSessionId);
+                                return ServerSentEvent.<String>builder()
+                                        .event("done")
+                                        .data(objectMapper.writeValueAsString(doneData))
+                                        .build();
+                            } catch (Exception e) {
+                                // 注入失败，返回原事件
+                            }
+                        }
+                        return event;
+                    });
+
+        } catch (Exception e) {
+            log.error("流式查询预处理失败 - 用户ID: {}", userId, e);
+            return Flux.just(ServerSentEvent.<String>builder()
+                    .event("error").data("{\"message\":\"请求处理失败: " + e.getMessage() + "\"}").build());
+        }
+    }
 
 
     /**

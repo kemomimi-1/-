@@ -11,13 +11,18 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
@@ -863,6 +868,313 @@ public class AIModelService {
     }
 
 
+    // ========== 流式输出方法 ==========
+
+    /**
+     * 流式处理用户查询 - 返回 SSE 事件流，实现真正的逐字推送
+     * 事件类型：thinking（思考状态）、chunk（文本片段）、done（完成）
+     */
+    public Flux<ServerSentEvent<String>> processUserQueryStream(Long userId, String userQuery, Map<String, Object> context) {
+        Sinks.Many<ServerSentEvent<String>> sink = Sinks.many().unicast().onBackpressureBuffer();
+        AtomicLong streamStartTime = new AtomicLong(System.currentTimeMillis());
+
+        CompletableFuture.runAsync(() -> {
+            try {
+                log.info("[流式] 开始处理用户查询 - 用户ID: {}, 查询: {}", userId, userQuery);
+
+                // 发送思考开始事件
+                emitSSE(sink, "thinking", Map.of("status", "started"));
+
+                // 构建消息和工具列表
+                List<Map<String, Object>> messages = buildEnhancedMessages(userQuery, context, userId);
+                List<Map<String, Object>> availableTools = mcpToolRegistry.getAllToolsForAI();
+
+                // 构建请求体
+                Map<String, Object> requestBody = buildEnhancedChatCompletionRequest(messages, availableTools);
+                // 强制开启流式
+                requestBody.put("stream", true);
+
+                // 执行流式对话（支持工具调用递归）
+                processStreamConversation(userId, requestBody, context, 0, sink, streamStartTime);
+
+            } catch (Exception e) {
+                log.error("[流式] 处理用户查询时出错 - 用户ID: {}", userId, e);
+                emitSSE(sink, "error", Map.of("message", "处理查询时出错: " + e.getMessage()));
+                sink.tryEmitComplete();
+            }
+        });
+
+        return sink.asFlux();
+    }
+
+    /**
+     * 流式对话处理核心 - 发送请求到AI并实时解析SSE响应流
+     * 支持流式文本输出和流式工具调用聚合
+     */
+    @SuppressWarnings("null")
+    private void processStreamConversation(Long userId, Map<String, Object> requestBody,
+                                           Map<String, Object> context, int recursionDepth,
+                                           Sinks.Many<ServerSentEvent<String>> sink,
+                                           AtomicLong streamStartTime) {
+        if (recursionDepth >= aiConfig.getMaxToolCalls()) {
+            emitSSE(sink, "error", Map.of("message", "已达到最大工具调用次数限制"));
+            emitDone(sink, streamStartTime);
+            return;
+        }
+
+        int maxRetries = aiConfig.getMaxRetries();
+
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                int timeoutSeconds = aiConfig.getTimeout() + (attempt - 1) * 30;
+
+                log.info("[流式] AI请求尝试 {}/{} - 递归深度: {} - 用户ID: {}", attempt, maxRetries, recursionDepth, userId);
+
+                // 使用 bodyToFlux 获取真正的流式响应
+                Flux<String> responseStream = webClient.post()
+                        .uri("/chat/completions")
+                        .bodyValue(requestBody)
+                        .accept(MediaType.TEXT_EVENT_STREAM)
+                        .retrieve()
+                        .onStatus(status -> status.is4xxClientError() || status.is5xxServerError(),
+                                clientResponse -> clientResponse.bodyToMono(String.class)
+                                        .defaultIfEmpty("Unknown API error")
+                                        .flatMap(errorBody -> {
+                                            log.error("[流式] AI API调用错误 - 状态码: {}, 响应: {}",
+                                                    clientResponse.statusCode(), errorBody);
+                                            return Mono.error(new RuntimeException("API调用失败: " + errorBody));
+                                        }))
+                        .bodyToFlux(String.class)
+                        .timeout(java.time.Duration.ofSeconds(timeoutSeconds));
+
+                // 状态变量：用于聚合流式工具调用
+                StringBuilder contentBuffer = new StringBuilder();
+                List<Map<String, Object>> toolCallsBuffer = new ArrayList<>();
+                boolean[] thinkingDone = {false};
+                long apiCallStart = System.currentTimeMillis();
+
+                // 阻塞消费流（在异步线程中安全）
+                responseStream.toStream().forEach(line -> {
+                    // 跳过空行和非data行
+                    String trimmed = line.trim();
+                    if (trimmed.isEmpty()) return;
+
+                    // 处理 SSE 格式：去掉 "data: " 前缀
+                    String jsonStr = trimmed;
+                    if (trimmed.startsWith("data: ")) {
+                        jsonStr = trimmed.substring(6).trim();
+                    } else if (trimmed.startsWith("data:")) {
+                        jsonStr = trimmed.substring(5).trim();
+                    }
+
+                    // 检查流结束标志
+                    if ("[DONE]".equals(jsonStr)) {
+                        return;
+                    }
+
+                    try {
+                        JsonNode chunk = objectMapper.readTree(jsonStr);
+                        JsonNode choices = chunk.get("choices");
+                        if (choices == null || choices.isEmpty()) return;
+
+                        JsonNode delta = choices.get(0).get("delta");
+                        if (delta == null) return;
+
+                        // 首次收到delta时，发送思考完成事件
+                        if (!thinkingDone[0]) {
+                            thinkingDone[0] = true;
+                            double duration = (System.currentTimeMillis() - apiCallStart) / 1000.0;
+                            emitSSE(sink, "thinking", Map.of("status", "done", "duration", duration));
+                        }
+
+                        // 处理文本内容
+                        if (delta.has("content") && !delta.get("content").isNull()) {
+                            String text = delta.get("content").asText();
+                            if (!text.isEmpty()) {
+                                contentBuffer.append(text);
+                                emitSSE(sink, "chunk", Map.of("text", text));
+                            }
+                        }
+
+                        // 处理流式工具调用（聚合分片的工具参数）
+                        if (delta.has("tool_calls")) {
+                            for (JsonNode tc : delta.get("tool_calls")) {
+                                int index = tc.has("index") ? tc.get("index").asInt() : 0;
+
+                                // 扩展buffer到足够大小
+                                while (toolCallsBuffer.size() <= index) {
+                                    Map<String, Object> emptyTool = new HashMap<>();
+                                    emptyTool.put("id", "");
+                                    emptyTool.put("name", "");
+                                    emptyTool.put("arguments", "");
+                                    toolCallsBuffer.add(emptyTool);
+                                }
+
+                                Map<String, Object> toolEntry = toolCallsBuffer.get(index);
+
+                                // 聚合工具ID
+                                if (tc.has("id") && !tc.get("id").isNull()) {
+                                    toolEntry.put("id", tc.get("id").asText());
+                                }
+                                // 聚合函数名称
+                                if (tc.has("function")) {
+                                    JsonNode fn = tc.get("function");
+                                    if (fn.has("name") && !fn.get("name").isNull()) {
+                                        toolEntry.put("name", fn.get("name").asText());
+                                    }
+                                    if (fn.has("arguments") && !fn.get("arguments").isNull()) {
+                                        // 流式参数拼接
+                                        toolEntry.put("arguments",
+                                                toolEntry.get("arguments").toString() + fn.get("arguments").asText());
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        log.debug("[流式] 解析数据行时跳过: {}", e.getMessage());
+                    }
+                });
+
+                // 流结束后：判断是否需要执行工具调用
+                if (!toolCallsBuffer.isEmpty()) {
+                    log.info("[流式] 检测到 {} 个工具调用，开始执行 - 用户ID: {}", toolCallsBuffer.size(), userId);
+                    processStreamToolCalls(userId, toolCallsBuffer, requestBody, context, recursionDepth, sink, streamStartTime);
+                } else {
+                    // 普通文本回答，直接完成
+                    emitDone(sink, streamStartTime);
+                }
+                return; // 成功，退出重试循环
+
+            } catch (Exception e) {
+                log.error("[流式] AI请求异常 - 用户ID: {}, 尝试 {}/{}: {}", userId, attempt, maxRetries, e.getMessage());
+                if (attempt == maxRetries) {
+                    emitSSE(sink, "error", Map.of("message", "AI服务请求失败: " + e.getMessage()));
+                    emitDone(sink, streamStartTime);
+                }
+                // 重试延迟
+                try { Thread.sleep(2000L * (long) Math.pow(2, attempt - 1)); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); return; }
+            }
+        }
+    }
+
+    /**
+     * 处理流式工具调用 - 执行工具后递归继续流式对话
+     */
+    private void processStreamToolCalls(Long userId, List<Map<String, Object>> toolCallsBuffer,
+                                        Map<String, Object> originalRequest, Map<String, Object> context,
+                                        int recursionDepth, Sinks.Many<ServerSentEvent<String>> sink,
+                                        AtomicLong streamStartTime) {
+        try {
+            List<ToolCallResult> toolResults = new ArrayList<>();
+
+            // 执行每个工具调用
+            for (Map<String, Object> tc : toolCallsBuffer) {
+                String toolId = tc.get("id").toString();
+                String functionName = tc.get("name").toString();
+                String argumentsStr = tc.get("arguments").toString();
+
+                log.info("[流式] 执行工具: {} - 用户ID: {}", functionName, userId);
+                emitSSE(sink, "thinking", Map.of("status", "started", "message", "正在执行工具: " + functionName));
+
+                try {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> arguments = objectMapper.readValue(argumentsStr, Map.class);
+                    Object toolResult = mcpToolRegistry.executeTool(userId, functionName, arguments, context);
+                    toolResults.add(new ToolCallResult(toolId, functionName, arguments, toolResult));
+                    log.info("[流式] 工具 {} 执行成功", functionName);
+                } catch (Exception e) {
+                    log.error("[流式] 工具 {} 执行失败: {}", functionName, e.getMessage());
+                    toolResults.add(new ToolCallResult(toolId, functionName, Map.of(), Map.of("error", e.getMessage())));
+                }
+            }
+
+            // 智能数据处理（压缩大数据）
+            List<ToolCallResult> processedResults = intelligentDataProcessing(userId, toolResults, context);
+
+            // 将工具结果追加到消息列表中
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> messages = (List<Map<String, Object>>) originalRequest.get("messages");
+
+            // 添加 assistant 的工具调用消息
+            Map<String, Object> assistantMessage = new HashMap<>();
+            assistantMessage.put("role", "assistant");
+            assistantMessage.put("content", null);
+            List<Map<String, Object>> toolCallsForMsg = new ArrayList<>();
+            for (ToolCallResult r : toolResults) {
+                Map<String, Object> tcMsg = new HashMap<>();
+                tcMsg.put("id", r.toolId());
+                tcMsg.put("type", "function");
+                Map<String, Object> fn = new HashMap<>();
+                fn.put("name", r.functionName());
+                fn.put("arguments", objectMapper.writeValueAsString(r.arguments()));
+                tcMsg.put("function", fn);
+                toolCallsForMsg.add(tcMsg);
+            }
+            assistantMessage.put("tool_calls", toolCallsForMsg);
+            messages.add(assistantMessage);
+
+            // 添加 tool 角色的结果消息
+            for (ToolCallResult r : processedResults) {
+                Map<String, Object> toolMsg = new HashMap<>();
+                toolMsg.put("role", "tool");
+                toolMsg.put("tool_call_id", r.toolId());
+                toolMsg.put("content", convertToolResultToJson(r.result()));
+                messages.add(toolMsg);
+            }
+
+            // 构建新请求并递归继续流式对话
+            Map<String, Object> nextRequest = new HashMap<>();
+            nextRequest.put("model", aiConfig.getModel());
+            nextRequest.put("messages", messages);
+            nextRequest.put("temperature", aiConfig.getTemperature());
+            nextRequest.put("max_tokens", aiConfig.getMaxTokens());
+            nextRequest.put("top_p", aiConfig.getTopP());
+            nextRequest.put("stream", true);
+
+            // 如果递归深度允许，继续提供工具
+            if (recursionDepth + 1 < aiConfig.getMaxToolCalls() - 1) {
+                List<Map<String, Object>> tools = mcpToolRegistry.getAllToolsForAI();
+                if (tools != null && !tools.isEmpty()) {
+                    nextRequest.put("tools", tools);
+                    nextRequest.put("tool_choice", "auto");
+                }
+            }
+
+            emitSSE(sink, "thinking", Map.of("status", "done", "duration", 0));
+
+            // 递归继续流式对话
+            processStreamConversation(userId, nextRequest, context, recursionDepth + 1, sink, streamStartTime);
+
+        } catch (Exception e) {
+            log.error("[流式] 处理工具调用失败 - 用户ID: {}: {}", userId, e.getMessage());
+            emitSSE(sink, "error", Map.of("message", "工具调用处理失败: " + e.getMessage()));
+            emitDone(sink, streamStartTime);
+        }
+    }
+
+    /**
+     * 发送一个 SSE 事件到前端
+     */
+    private void emitSSE(Sinks.Many<ServerSentEvent<String>> sink, String eventType, Map<String, Object> data) {
+        try {
+            String json = objectMapper.writeValueAsString(data);
+            sink.tryEmitNext(ServerSentEvent.<String>builder()
+                    .event(eventType)
+                    .data(json)
+                    .build());
+        } catch (Exception e) {
+            log.warn("[流式] 发送SSE事件失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 发送完成事件并关闭流
+     */
+    private void emitDone(Sinks.Many<ServerSentEvent<String>> sink, AtomicLong streamStartTime) {
+        double totalTime = (System.currentTimeMillis() - streamStartTime.get()) / 1000.0;
+        emitSSE(sink, "done", Map.of("totalTime", totalTime));
+        sink.tryEmitComplete();
+    }
 
     // ========== 数据类定义 ==========
 

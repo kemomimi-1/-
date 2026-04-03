@@ -39,6 +39,7 @@ const API_ROUTES = {
         BY_ID: (id) => `/api/conversations/${id}`,
         MESSAGES: (id) => `/api/conversations/${id}/messages`,
         BOOKMARK: (id) => `/api/conversations/${id}/bookmark`,
-        AI_QUERY: '/api/ai/query'
+        AI_QUERY: '/api/ai/query',
+        AI_QUERY_STREAM: '/api/ai/query-stream'
     }
 };
