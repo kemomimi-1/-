@@ -17,6 +17,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
 
 @Slf4j
 @Service
@@ -52,14 +53,21 @@ public class RealTimeSpectrumAnalysisService {
     public void startRealTimeAnalysis(Long userId) {
         activeUsers.add(userId);
 
-        // 【关键修复】初始化用户的分析起始点为当前最新数据时间
-        initializeUserAnalysisStartPoint(userId);
+        // 使用异步操作，避免阻塞 /start 接口（初始化查库与第一次AI请求可能耗时10秒）
+        CompletableFuture.runAsync(() -> {
+            try {
+                // 【关键修复】初始化用户的分析起始点为当前最新数据时间
+                initializeUserAnalysisStartPoint(userId);
 
-        log.info("启动用户 {} 的实时频谱分析，初始分析时间点: {}",
-                userId, lastAnalysisTimes.get(userId));
+                log.info("启动用户 {} 的实时频谱分析，初始分析时间点: {}",
+                        userId, lastAnalysisTimes.get(userId));
 
-        // 立即执行一次分析
-        performAnalysisForUser(userId);
+                // 立即执行一次分析
+                performAnalysisForUser(userId);
+            } catch (Exception e) {
+                log.error("用户 {} 启动实时频谱分析异步任务失败", userId, e);
+            }
+        });
     }
 
     /**
@@ -69,9 +77,10 @@ public class RealTimeSpectrumAnalysisService {
     private void initializeUserAnalysisStartPoint(Long userId) {
         try {
             // 获取用户最新一批数据里最早的那条时间，作为游标起点
+            // 加上 time >= now() - 1d 防止全表扫描导致查询极慢
             String query = String.format(
                     "SELECT time FROM avg_band_power " +
-                            "WHERE user_id = '%d' " +
+                            "WHERE user_id = '%d' AND time >= now() - 1d " +
                             "ORDER BY time DESC " +
                             "LIMIT %d",
                     userId,
