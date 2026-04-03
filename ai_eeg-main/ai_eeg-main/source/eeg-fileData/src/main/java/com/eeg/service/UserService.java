@@ -58,6 +58,7 @@ public class UserService {
         return user;
     }
 
+    @SuppressWarnings("null")
     @Transactional
     public void updateUserPorts(Long userId, int rawPort, int filtPort, int bandPort) {
         User user = userRepository.findById(userId)
@@ -73,6 +74,7 @@ public class UserService {
                 userId, rawPort, filtPort, bandPort);
     }
 
+    @SuppressWarnings("null")
     @Transactional
     public void setUserInactive(Long userId) {
         User user = userRepository.findById(userId)
@@ -83,6 +85,7 @@ public class UserService {
         log.info("用户 {} 已设置为非活跃状态", userId);
     }
 
+    @SuppressWarnings("null")
     public User findById(Long userId) {
         return userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("用户不存在"));

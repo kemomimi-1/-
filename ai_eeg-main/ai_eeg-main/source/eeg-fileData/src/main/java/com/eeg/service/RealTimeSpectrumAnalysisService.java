@@ -63,37 +63,42 @@ public class RealTimeSpectrumAnalysisService {
     }
 
     /**
-     * 【新增】初始化用户分析起始点
+     * 初始化用户分析起始点为最新数据时间点的稍早处，
+     * 使得首次分析能立即查到数据（time > cursor）。
      */
     private void initializeUserAnalysisStartPoint(Long userId) {
         try {
-            // 获取用户最新数据的时间点
+            // 获取用户最新一批数据里最早的那条时间，作为游标起点
             String query = String.format(
                     "SELECT time FROM avg_band_power " +
                             "WHERE user_id = '%d' " +
                             "ORDER BY time DESC " +
-                            "LIMIT 1",
-                    userId
+                            "LIMIT %d",
+                    userId,
+                    minSamples * 5
             );
 
             String jsonResponse = influxDBService.queryData(query, "json").block();
             if (jsonResponse != null && !jsonResponse.trim().isEmpty() && !jsonResponse.equals("[]")) {
                 JsonNode rootNode = objectMapper.readTree(jsonResponse);
                 if (rootNode.isArray() && rootNode.size() > 0) {
-                    JsonNode firstRecord = rootNode.get(0);
+                    // 取最后一条（最旧的那条），作为游标起点，这样 time > cursor 能查出所有这批数据
+                    JsonNode lastRecord = rootNode.get(rootNode.size() - 1);
                     String timeStr = null;
 
-                    if (firstRecord.isArray() && firstRecord.size() >= 1) {
-                        timeStr = firstRecord.get(0).asText();
-                    } else if (firstRecord.isObject()) {
-                        timeStr = firstRecord.get("time") != null ? firstRecord.get("time").asText() : null;
+                    if (lastRecord.isArray() && lastRecord.size() >= 1) {
+                        timeStr = lastRecord.get(0).asText();
+                    } else if (lastRecord.isObject()) {
+                        timeStr = lastRecord.get("time") != null ? lastRecord.get("time").asText() : null;
                     }
 
                     if (timeStr != null) {
-                        LocalDateTime latestTime = parseTimeString(timeStr);
-                        if (latestTime != null) {
-                            lastAnalysisTimes.put(userId, latestTime);
-                            log.info("用户 {} 分析起始点设置为: {}", userId, latestTime);
+                        LocalDateTime cursorTime = parseTimeString(timeStr);
+                        if (cursorTime != null) {
+                            // 再往前推1秒，确保 time > cursor 能取到这条数据
+                            cursorTime = cursorTime.minusSeconds(1);
+                            lastAnalysisTimes.put(userId, cursorTime);
+                            log.info("用户 {} 分析游标初始化为: {}", userId, cursorTime);
                             return;
                         }
                     }
@@ -103,8 +108,9 @@ public class RealTimeSpectrumAnalysisService {
             log.warn("获取用户 {} 最新数据时间失败，使用默认策略", userId, e);
         }
 
-        // fallback: 使用当前时间往前推5分钟作为起始点
+        // fallback: 从5分钟前开始追新数据
         lastAnalysisTimes.put(userId, LocalDateTime.now().minusMinutes(5));
+        log.info("用户 {} 分析游标使用默认值（当前时间-5分钟）", userId);
     }
 
     /**
@@ -159,6 +165,7 @@ public class RealTimeSpectrumAnalysisService {
     /**
      * 为特定用户执行分析 - 【核心修复】实现真正的持续向前推进
      */
+    @SuppressWarnings("null")
     private void performAnalysisForUser(Long userId) {
         try {
             log.debug("开始为用户 {} 执行分析", userId);
@@ -187,8 +194,8 @@ public class RealTimeSpectrumAnalysisService {
             // 通过WebSocket推送弹幕
             sendBarrageNotification(userId, savedBarrage);
 
-            // 【关键修复】更新分析时间点，确保下次获取不同的数据
-            updateAnalysisTimePoint(userId, spectralData.getStartTime());
+            // 更新游标为本次数据最新时间，下次从这里往后查
+            updateAnalysisTimePoint(userId, spectralData.getEndTime());
 
             log.info("用户 {} 生成新弹幕: {}", userId, savedBarrage.getContent());
 
@@ -198,55 +205,51 @@ public class RealTimeSpectrumAnalysisService {
     }
 
     /**
-     * 【新增】更新分析时间点
+     * 更新分析时间游标为本次数据的最新时间，下次查询 time > cursor 时取到更新的数据
      */
-    private void updateAnalysisTimePoint(Long userId, LocalDateTime analysisEndTime) {
-        // 将时间点设置为本次分析数据的最早时间，实现向前推进
-        lastAnalysisTimes.put(userId, analysisEndTime);
-        log.debug("用户 {} 更新分析时间点为: {}", userId, analysisEndTime);
+    private void updateAnalysisTimePoint(Long userId, LocalDateTime newestDataTime) {
+        lastAnalysisTimes.put(userId, newestDataTime);
+        log.debug("用户 {} 更新分析游标为: {}", userId, newestDataTime);
     }
 
     /**
-     * 【重构】获取持续频谱数据 - 确保每次获取不同时间段的数据
+     * 获取持续频谱数据 - 每次取比游标更新的数据，游标不断正向推进
      */
     private SpectralData getContinuousSpectralData(Long userId) {
         return getContinuousSpectralDataWithDepth(userId, 0);
     }
 
     private SpectralData getContinuousSpectralDataWithDepth(Long userId, int depth) {
-        // 【修复】防止无限递归，最多重试1次
         if (depth > 1) {
-            log.warn("用户 {} 数据采样已达最大重试次数，放弃本次分析", userId);
+            log.warn("用户 {} 数据采样已达最大重试次数，暂无新数据", userId);
             return null;
         }
 
-        LocalDateTime lastAnalysisTime = lastAnalysisTimes.get(userId);
+        LocalDateTime cursor = lastAnalysisTimes.get(userId);
 
-        if (lastAnalysisTime == null) {
-            log.warn("用户 {} 分析时间点为空，重新初始化", userId);
+        if (cursor == null) {
+            log.warn("用户 {} 分析游标为空，重新初始化", userId);
             initializeUserAnalysisStartPoint(userId);
-            lastAnalysisTime = lastAnalysisTimes.get(userId);
-
-            if (lastAnalysisTime == null) {
-                log.error("用户 {} 无法初始化分析时间点", userId);
+            cursor = lastAnalysisTimes.get(userId);
+            if (cursor == null) {
+                log.error("用户 {} 无法初始化分析游标", userId);
                 return null;
             }
         }
 
         try {
-            // 查询比上次分析时间更早的数据，实现向历史数据回溯
+            // 【核心修复】查比游标更新的数据，游标正向推进
             String query = String.format(
                     "SELECT time, band, value FROM avg_band_power " +
-                            "WHERE user_id = '%d' AND time < '%s' " +
-                            "ORDER BY time DESC " +
+                            "WHERE user_id = '%d' AND time > '%s' " +
+                            "ORDER BY time ASC " +
                             "LIMIT %d",
                     userId,
-                    lastAnalysisTime.format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS")),
-                    minSamples * 5  // 获取足够的数据量
+                    cursor.format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS")),
+                    minSamples * 5
             );
 
-            log.debug("用户 {} 持续采样查询 - 上次分析时间: {}", userId, lastAnalysisTime);
-            log.debug("执行查询: {}", query);
+            log.debug("用户 {} 持续采样查询 - 游标: {}", userId, cursor);
 
             String jsonResponse = influxDBService.queryData(query, "json").block();
 
@@ -258,32 +261,20 @@ public class RealTimeSpectrumAnalysisService {
                             userId, data.getSampleCount(), data.getStartTime(), data.getEndTime());
                     return data;
                 } else {
-                    log.warn("用户 {} 持续采样数据不足 - 样本数: {}/{}",
+                    log.warn("用户 {} 新数据不足 - 样本数: {}/{}",
                             userId, data != null ? data.getSampleCount() : 0, minSamples);
                 }
             } else {
-                log.warn("用户 {} 持续采样查询返回空结果", userId);
+                log.debug("用户 {} 暂无新数据（游标: {}），等待下次调度", userId, cursor);
             }
 
-            // 如果没有更早的数据，说明历史数据已经用完，重新从最新数据开始
-            log.info("用户 {} 历史数据已遍历完毕，重新从最新数据开始循环", userId);
-            resetToLatestData(userId);
-
-            // 【修复】带深度计数器的重试，防止无限递归
-            return getContinuousSpectralDataWithDepth(userId, depth + 1);
+            // 没有足够的新数据时，不重置游标，直接返回 null 等待下次调度
+            return null;
 
         } catch (Exception e) {
             log.error("用户 {} 持续数据采样失败", userId, e);
             return null;
         }
-    }
-
-    /**
-     * 【新增】重置到最新数据
-     */
-    private void resetToLatestData(Long userId) {
-        initializeUserAnalysisStartPoint(userId);
-        log.info("用户 {} 重置到最新数据点: {}", userId, lastAnalysisTimes.get(userId));
     }
 
     // ========== 删除弹幕功能 ==========
@@ -396,11 +387,11 @@ public class RealTimeSpectrumAnalysisService {
                             continue;
                         }
 
-                        // 关键修复：由于ORDER BY time DESC，第一条是最新时间，最后一条是最早时间
-                        if (lastTime == null) {
-                            lastTime = recordTime; // 最新时间
+                        // ORDER BY time ASC：第一条是最早时间，最后一条是最新时间
+                        if (firstTime == null) {
+                            firstTime = recordTime; // 最早时间（游标后第一条）
                         }
-                        firstTime = recordTime; // 最后会变成最早时间
+                        lastTime = recordTime; // 持续更新为最新时间
 
                         if (bandValues.containsKey(band)) {
                             bandValues.get(band).add(value);

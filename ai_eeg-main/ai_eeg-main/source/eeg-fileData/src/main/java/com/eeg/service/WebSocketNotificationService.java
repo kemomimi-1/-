@@ -7,8 +7,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
-
-import java.io.IOException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
 
@@ -30,6 +28,7 @@ public class WebSocketNotificationService {
         log.info("用户 {} WebSocket会话已断开", userId);
     }
 
+    @SuppressWarnings("null")
     public void notifyUser(Long userId, String type, Object data) {
         WebSocketSession session = userSessions.get(userId);
         if (session != null && session.isOpen()) {

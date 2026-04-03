@@ -2,17 +2,17 @@
 package com.eeg.service;
 
 import com.eeg.config.AIModelConfig;
-import com.eeg.controller.AIQueryController;
+import com.eeg.entity.ai.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
+
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
+
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
+
 import reactor.core.publisher.Mono;
 
 import java.time.LocalDateTime;
@@ -26,7 +26,6 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class AIModelService {
 
     private final AIModelConfig aiConfig;
@@ -38,7 +37,8 @@ public class AIModelService {
     private static final int LARGE_DATA_THRESHOLD_MB = 4; // 4MB阈值
 
 
-    @Autowired
+
+    @SuppressWarnings("null")
     public AIModelService(AIModelConfig aiConfig, MCPToolRegistry mcpToolRegistry, ObjectMapper objectMapper) {
         this.aiConfig = aiConfig;
         this.mcpToolRegistry = mcpToolRegistry;
@@ -60,40 +60,18 @@ public class AIModelService {
     /**
      * 验证MCP工具集成状态
      */
-    private void validateMCPToolsIntegration() {
+        private void validateMCPToolsIntegration() {
         try {
             List<Map<String, Object>> availableTools = mcpToolRegistry.getAllToolsForAI();
-            log.info("MCP工具集成验证成功 - 可用工具数量: {}", availableTools.size());
+            log.info("MCP工具集成验证成功 - 动态加载可用工具数量: {}", availableTools.size());
 
-            // 验证15个核心工具是否都可用
-            Set<String> expectedTools = Set.of(
-                    "getActiveSessionContext", "queryLatestBandPowerData", "generateComprehensiveSessionSummary",
-                    "getSessionDetails", "monitorSignalQuality", "getUserStatistics",
-                    "queryRawEEGData", "queryFilteredEEGData", "assessSessionDataVolume",
-                    "compareSessionDataQuality", "querySessionsByConditions",
-                    "getSessionTechnicalSpecs", "getSessionHistory", "executeCustomQuery",
-                    "queryDataByTimeRange"
-            );
-
-            Set<String> availableToolNames = new HashSet<>();
-            for (Map<String, Object> tool : availableTools) {
-                Map<String, Object> function = (Map<String, Object>) tool.get("function");
-                if (function != null) {
-                    availableToolNames.add((String) function.get("name"));
-                }
-            }
-
-            Set<String> missingTools = new HashSet<>(expectedTools);
-            missingTools.removeAll(availableToolNames);
-
-            if (missingTools.isEmpty()) {
-                log.info("✅ MCP工具集成完整性验证通过 - 所有"+availableTools.size()+" 个核心工具已正确集成");
+            if (!availableTools.isEmpty()) {
+                log.info("✅ MCP工具集成基本验证通过");
             } else {
-                log.warn("⚠️ MCP工具集成不完整 - 缺失工具: {}", missingTools);
+                log.warn("⚠️ 未检测到任何已注册的MCP工具");
             }
-
         } catch (Exception e) {
-            log.error("❌ MCP工具集成验证失败", e);
+            log.error("❌ MCP工具加载失败", e);
         }
     }
 
@@ -133,6 +111,7 @@ public class AIModelService {
     /**
      * 增强版：处理AI对话流程 - 修复多工具协作问题
      */
+    @SuppressWarnings("null")
     private AIResponse processEnhancedAIConversation(Long userId, Map<String, Object> requestBody,
                                                      Map<String, Object> context, int recursionDepth) {
         if (recursionDepth >= aiConfig.getMaxToolCalls()) {
@@ -290,6 +269,7 @@ public class AIModelService {
 
                 try {
                     // 解析参数
+                    @SuppressWarnings("unchecked")
                     Map<String, Object> arguments = objectMapper.readValue(argumentsStr, Map.class);
 
                     // 执行MCP工具 - 通过MCPToolRegistry
@@ -408,6 +388,7 @@ public class AIModelService {
     /**
      * 改进版：转换工具结果为JSON字符串 - 支持大数据检测
      */
+    @SuppressWarnings("null")
     private String convertToolResultToJson(Object result) {
         try {
             if (result == null) {
@@ -568,9 +549,9 @@ public class AIModelService {
         // 修复：处理查询复杂度分析 - 正确处理对象类型
         if (context.containsKey("queryComplexityAnalysis")) {
             Object complexityObj = context.get("queryComplexityAnalysis");
-            if (complexityObj instanceof AIQueryController.QueryComplexityAnalysis) {
-                AIQueryController.QueryComplexityAnalysis complexity =
-                        (AIQueryController.QueryComplexityAnalysis) complexityObj;
+            if (complexityObj instanceof QueryComplexityAnalysis) {
+                QueryComplexityAnalysis complexity =
+                        (QueryComplexityAnalysis) complexityObj;
                 contextStr.append("查询复杂度: ").append(complexity.getLevel())
                         .append(" (").append(complexity.getDescription()).append(")\n");
             }
@@ -579,9 +560,9 @@ public class AIModelService {
         // 修复：处理协作策略 - 正确处理对象类型
         if (context.containsKey("collaborationStrategy")) {
             Object strategyObj = context.get("collaborationStrategy");
-            if (strategyObj instanceof AIQueryController.CollaborationStrategy) {
-                AIQueryController.CollaborationStrategy strategy =
-                        (AIQueryController.CollaborationStrategy) strategyObj;
+            if (strategyObj instanceof CollaborationStrategy) {
+                CollaborationStrategy strategy =
+                        (CollaborationStrategy) strategyObj;
                 contextStr.append("建议协作策略: ").append(strategy.getType())
                         .append(", 预期工具数: ").append(strategy.getExpectedToolCount()).append("\n");
             }
@@ -610,87 +591,34 @@ public class AIModelService {
     /**
      * 增强版：构建工具使用指导
      */
-    private String buildEnhancedToolGuidance(String userQuery, Map<String, Object> context) {
+            private String buildEnhancedToolGuidance(String userQuery, Map<String, Object> context) {
         StringBuilder guidance = new StringBuilder();
-        guidance.append("【增强版MCP工具使用指导】\n\n");
+        guidance.append("【MCP工具智能协作系统指令】\\n\\n");
 
-        String queryLower = userQuery.toLowerCase();
-
-        // 基于查询内容推荐工具 - 更详细的指导
-        if (queryLower.contains("最新") || queryLower.contains("最近") || queryLower.contains("当前")) {
-            guidance.append("🎯 实时数据查询场景检测\n");
-            guidance.append("推荐优先使用: getActiveSessionContext - 获取当前活跃会话状态\n");
-            guidance.append("协作工具: queryLatestBandPowerData - 获取最新频谱数据\n");
-        }
-
-        if (queryLower.matches(".*会话\\s*\\d+.*") || queryLower.contains("会话id") ||
-                (queryLower.contains("会话") && queryLower.matches(".*\\d+.*"))) {
-            guidance.append("🎯 特定会话查询场景检测\n");
-            guidance.append("推荐优先使用: getSessionDetails - 获取特定会话详情\n");
-            guidance.append("协作工具: getSessionTechnicalSpecs - 获取技术规格（如需要）\n");
-        }
-
-        if (queryLower.contains("对比") || queryLower.contains("比较")) {
-            guidance.append("🎯 对比分析场景检测\n");
-            guidance.append("推荐优先使用: compareSessionDataQuality - 多会话质量对比\n");
-            guidance.append("协作工具: getSessionHistory - 获取历史会话数据\n");
-        }
-
-        if (queryLower.contains("质量") || queryLower.contains("稳定") || queryLower.contains("噪声")) {
-            guidance.append("🎯 质量评估场景检测\n");
-            guidance.append("推荐优先使用: monitorSignalQuality - 信号质量监测\n");
-        }
-
-        if (queryLower.contains("全面") || queryLower.contains("详细") || queryLower.contains("深入")) {
-            guidance.append("🎯 综合分析场景检测\n");
-            guidance.append("推荐优先使用: generateComprehensiveSessionSummary - 生成综合摘要\n");
-            guidance.append("协作工具: assessSessionDataVolume - 评估数据量\n");
-        }
-
-        if (queryLower.contains("历史") || queryLower.contains("记录") || queryLower.contains("所有")) {
-            guidance.append("🎯 历史数据查询场景检测\n");
-            guidance.append("推荐优先使用: getSessionHistory - 获取历史记录\n");
-        }
-
-        if (queryLower.contains("统计") || queryLower.contains("总计") || queryLower.contains("平均")) {
-            guidance.append("🎯 统计分析场景检测\n");
-            guidance.append("推荐优先使用: getUserStatistics - 获取用户统计信息\n");
-        }
-
-        if (queryLower.contains("原始") || queryLower.contains("时间序列")) {
-            guidance.append("🎯 原始数据查询场景检测\n");
-            guidance.append("推荐优先使用: queryRawEEGData - 查询原始EEG数据\n");
-        }
-
-        if (queryLower.contains("滤波") || queryLower.contains("清洁")) {
-            guidance.append("🎯 滤波数据查询场景检测\n");
-            guidance.append("推荐优先使用: queryFilteredEEGData - 查询滤波后数据\n");
-        }
-
-        // 添加通用指导原则
-        guidance.append("\n📋 重要指导原则:\n");
-        guidance.append("1. 必须使用MCP工具获取准确的数据信息，绝不编造数据\n");
-        guidance.append("2. 基于工具返回的真实结果提供分析和解释\n");
-        guidance.append("3. 如果工具返回错误，向用户说明具体问题\n");
-        guidance.append("4. 可以协作使用多个工具来提供更全面的分析\n");
-        guidance.append("5. 始终提供科学准确的神经科学解释\n");
-        guidance.append("6. 当数据不足时，明确说明分析的局限性\n\n");
-
-        // 添加工具协作建议
-        if (context.containsKey("enhancedToolSelectionGuidance")) {
+        if (context.containsKey("toolSelectionGuidance")) {
             @SuppressWarnings("unchecked")
-            Map<String, Object> toolGuidance = (Map<String, Object>) context.get("enhancedToolSelectionGuidance");
-
-            if (toolGuidance.containsKey("collaborationSuggestions")) {
-                @SuppressWarnings("unchecked")
-                Map<String, List<String>> suggestions = (Map<String, List<String>>) toolGuidance.get("collaborationSuggestions");
-
-                guidance.append("💡 智能协作建议:\n");
-                suggestions.forEach((scenario, tools) -> {
-                    guidance.append("• ").append(scenario).append(": ").append(String.join(" + ", tools)).append("\n");
-                });
+            Map<String, Object> contextGuidance = (Map<String, Object>) context.get("toolSelectionGuidance");
+            
+            if (contextGuidance.containsKey("strategyExplanation")) {
+                guidance.append("🎯 协作策略定位: ").append(contextGuidance.get("strategyExplanation")).append("\\n");
             }
+            
+            if (contextGuidance.containsKey("recommendedTools")) {
+                @SuppressWarnings("unchecked")
+                List<String> tools = (List<String>) contextGuidance.get("recommendedTools");
+                guidance.append("推荐优先考虑以下工具链以形成最佳上下文: \\n");
+                for (String tool : tools) {
+                    guidance.append("- ").append(tool).append("\\n");
+                }
+            }
+        } else {
+            guidance.append("请根据用户请求语义，动态分析并自行决定使用哪些MCP工具。\\n");
         }
+
+        guidance.append("\\n⚠️ 注意事项:\\n");
+        guidance.append("- 你是主动的思考者，请务必先思考需要哪些补充信息，再精确调用对应的MCP工具。\\n");
+        guidance.append("- 可以串行或并行调用多个工具，直到获得充足上下文后再回答。\\n");
+        guidance.append("- 如果现有工具无法提供直接答案，请使用 executeCustomQuery 构建InxluxQL。\\n");
 
         return guidance.toString();
     }

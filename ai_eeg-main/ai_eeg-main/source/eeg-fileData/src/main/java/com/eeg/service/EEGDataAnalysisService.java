@@ -9,12 +9,10 @@ import lombok.Data;
 import lombok.AllArgsConstructor;
 import lombok.NoArgsConstructor;
 import org.springframework.stereotype.Service;
-import reactor.core.publisher.Mono;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.stream.Collectors;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -33,29 +31,14 @@ public class EEGDataAnalysisService {
 
     // 数据量阈值配置
     private static final int MAX_TIME_SERIES_RECORDS = 1000; // 时间序列查询最大记录数
-    private static final int SAMPLE_SIZE_FOR_ANALYSIS = 500;  // 分析采样大小
-    private static final String DEFAULT_TIME_AGGREGATION = "minute"; // 默认时间聚合级别
+    private static final int SAMPLE_SIZE_FOR_ANALYSIS = 500; // 分析采样大小
 
-    // 脑电频段定义（基于国际标准）
-    private static final Map<String, double[]> FREQUENCY_BANDS = Map.of(
-            "delta", new double[]{1.0, 4.0},
-            "theta", new double[]{4.0, 8.0},
-            "alpha", new double[]{8.0, 13.0},
-            "beta", new double[]{13.0, 30.0},
-            "gamma", new double[]{30.0, 100.0}
-    );
-
-    // OpenBCI标准电极位置（10-20系统）
-    private static final Map<Integer, String> ELECTRODE_POSITIONS = Map.of(
-            1, "Fp1", 2, "Fp2", 3, "C3", 4, "C4",
-            5, "P7", 6, "P8", 7, "O1", 8, "O2"
-    );
 
     /**
      * 生成会话级别的多层次数据摘要 - 优化版本
      */
     public CompletableFuture<SessionDataSummary> generateSessionSummary(Long userId, Long sessionId,
-                                                                        SummaryConfig config) {
+            SummaryConfig config) {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 log.info("开始生成用户 {} 会话 {} 的数据摘要（优化版本）", userId, sessionId);
@@ -68,9 +51,9 @@ public class EEGDataAnalysisService {
                         .orElseThrow(() -> new RuntimeException("会话不存在"));
 
                 String startTime = session.getSessionStartTimeUtc().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
-                String endTime = session.getSessionEndTimeUtc() != null ?
-                        session.getSessionEndTimeUtc().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) :
-                        LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+                String endTime = session.getSessionEndTimeUtc() != null
+                        ? session.getSessionEndTimeUtc().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                        : LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
 
                 // 【优化】先检查数据量，决定查询策略
                 DataVolumeInfo volumeInfo = assessDataVolume(userId, startTime, endTime);
@@ -79,13 +62,19 @@ public class EEGDataAnalysisService {
 
                 // 并行执行多层分析 - 使用优化的查询策略
                 CompletableFuture<BasicStatsSummary> basicStats = generateBasicStatsSummary(userId, startTime, endTime);
-                CompletableFuture<FrequencyDomainSummary> frequencyAnalysis = generateFrequencyDomainSummaryOptimized(userId, startTime, endTime, volumeInfo);
-                CompletableFuture<TemporalPatternSummary> temporalAnalysis = generateTemporalPatternSummaryOptimized(userId, startTime, endTime, config, volumeInfo);
-                CompletableFuture<DataQualitySummary> qualityAnalysis = generateDataQualitySummary(userId, startTime, endTime);
-                CompletableFuture<SpatialFeatureSummary> spatialAnalysis = generateSpatialFeatureSummaryOptimized(userId, startTime, endTime, volumeInfo);
+                CompletableFuture<FrequencyDomainSummary> frequencyAnalysis = generateFrequencyDomainSummaryOptimized(
+                        userId, startTime, endTime, volumeInfo);
+                CompletableFuture<TemporalPatternSummary> temporalAnalysis = generateTemporalPatternSummaryOptimized(
+                        userId, startTime, endTime, config, volumeInfo);
+                CompletableFuture<DataQualitySummary> qualityAnalysis = generateDataQualitySummary(userId, startTime,
+                        endTime);
+                CompletableFuture<SpatialFeatureSummary> spatialAnalysis = generateSpatialFeatureSummaryOptimized(
+                        userId, startTime, endTime, volumeInfo);
 
                 // 等待所有分析完成
-                CompletableFuture.allOf(basicStats, frequencyAnalysis, temporalAnalysis, qualityAnalysis, spatialAnalysis).join();
+                CompletableFuture
+                        .allOf(basicStats, frequencyAnalysis, temporalAnalysis, qualityAnalysis, spatialAnalysis)
+                        .join();
 
                 // 构建综合摘要
                 SessionDataSummary summary = new SessionDataSummary();
@@ -116,20 +105,20 @@ public class EEGDataAnalysisService {
         try {
             // 快速计算原始数据量
             String rawCountQuery = String.format("""
-                SELECT COUNT(*) as record_count 
-                FROM timeseriesraw 
-                WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                """, userId, startTime, endTime);
+                    SELECT COUNT(*) as record_count
+                    FROM timeseriesraw
+                    WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                    """, userId, startTime, endTime);
 
             String rawResult = influxDBService.queryData(rawCountQuery, "json").block();
             info.rawDataCount = parseRecordCount(rawResult);
 
             // 快速计算频段数据量
             String bandCountQuery = String.format("""
-                SELECT COUNT(*) as record_count 
-                FROM avg_band_power 
-                WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                """, userId, startTime, endTime);
+                    SELECT COUNT(*) as record_count
+                    FROM avg_band_power
+                    WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                    """, userId, startTime, endTime);
 
             String bandResult = influxDBService.queryData(bandCountQuery, "json").block();
             info.bandDataCount = parseRecordCount(bandResult);
@@ -165,23 +154,24 @@ public class EEGDataAnalysisService {
     /**
      * 【优化】频域特征摘要 - 避免大数据量查询
      */
-    private CompletableFuture<FrequencyDomainSummary> generateFrequencyDomainSummaryOptimized(Long userId, String startTime, String endTime, DataVolumeInfo volumeInfo) {
+    private CompletableFuture<FrequencyDomainSummary> generateFrequencyDomainSummaryOptimized(Long userId,
+            String startTime, String endTime, DataVolumeInfo volumeInfo) {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 // 频段功率统计 - 始终使用聚合查询
                 String bandPowerQuery = String.format("""
-                    SELECT 
-                        band,
-                        COUNT(*) as measurement_count,
-                        MIN(value) as min_power,
-                        MAX(value) as max_power,
-                        AVG(value) as mean_power,
-                        STDDEV(value) as std_power
-                    FROM avg_band_power 
-                    WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                    GROUP BY band
-                    ORDER BY band
-                    """, userId, startTime, endTime);
+                        SELECT
+                            band,
+                            COUNT(*) as measurement_count,
+                            MIN(value) as min_power,
+                            MAX(value) as max_power,
+                            AVG(value) as mean_power,
+                            STDDEV(value) as std_power
+                        FROM avg_band_power
+                        WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                        GROUP BY band
+                        ORDER BY band
+                        """, userId, startTime, endTime);
 
                 String bandPowerStats = influxDBService.queryData(bandPowerQuery, "json").block();
 
@@ -190,31 +180,31 @@ public class EEGDataAnalysisService {
                 if (volumeInfo.queryStrategy == QueryStrategy.FULL_DATA) {
                     // 小数据量：查询原始时间序列
                     String bandTrendQuery = String.format("""
-                        SELECT 
-                            band,
-                            time,
-                            value
-                        FROM avg_band_power 
-                        WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                        ORDER BY band, time
-                        LIMIT %d
-                        """, userId, startTime, endTime, MAX_TIME_SERIES_RECORDS);
+                            SELECT
+                                band,
+                                time,
+                                value
+                            FROM avg_band_power
+                            WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                            ORDER BY band, time
+                            LIMIT %d
+                            """, userId, startTime, endTime, MAX_TIME_SERIES_RECORDS);
 
                     bandTrendData = influxDBService.queryData(bandTrendQuery, "json").block();
                 } else {
                     // 大数据量：使用时间聚合
                     String bandTrendAggQuery = String.format("""
-                        SELECT 
-                            band,
-                            DATE_TRUNC('minute', time) as time_bucket,
-                            AVG(value) as avg_value,
-                            COUNT(*) as sample_count
-                        FROM avg_band_power 
-                        WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                        GROUP BY band, time_bucket
-                        ORDER BY band, time_bucket
-                        LIMIT %d
-                        """, userId, startTime, endTime, volumeInfo.sampleSize);
+                            SELECT
+                                band,
+                                DATE_TRUNC('minute', time) as time_bucket,
+                                AVG(value) as avg_value,
+                                COUNT(*) as sample_count
+                            FROM avg_band_power
+                            WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                            GROUP BY band, time_bucket
+                            ORDER BY band, time_bucket
+                            LIMIT %d
+                            """, userId, startTime, endTime, volumeInfo.sampleSize);
 
                     bandTrendData = influxDBService.queryData(bandTrendAggQuery, "json").block();
                 }
@@ -231,43 +221,45 @@ public class EEGDataAnalysisService {
     /**
      * 【优化】时序模式摘要 - 智能采样
      */
-    private CompletableFuture<TemporalPatternSummary> generateTemporalPatternSummaryOptimized(Long userId, String startTime,
-                                                                                              String endTime, SummaryConfig config, DataVolumeInfo volumeInfo) {
+    private CompletableFuture<TemporalPatternSummary> generateTemporalPatternSummaryOptimized(Long userId,
+            String startTime,
+            String endTime, SummaryConfig config, DataVolumeInfo volumeInfo) {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 // 根据数据量调整时间窗口
-                String timeGranularity = volumeInfo.queryStrategy == QueryStrategy.AGGRESSIVE_SAMPLING ? "hour" : "minute";
+                String timeGranularity = volumeInfo.queryStrategy == QueryStrategy.AGGRESSIVE_SAMPLING ? "hour"
+                        : "minute";
 
                 String changeAnalysisQuery = String.format("""
-                    SELECT 
-                        channel,
-                        DATE_TRUNC('%s', time) as time_window,
-                        COUNT(*) as sample_count,
-                        AVG(value) as window_avg,
-                        MIN(value) as window_min,
-                        MAX(value) as window_max,
-                        STDDEV(value) as window_std
-                    FROM timeseriesfilt 
-                    WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                    GROUP BY channel, time_window
-                    ORDER BY channel, time_window
-                    LIMIT %d
-                    """, timeGranularity, userId, startTime, endTime, volumeInfo.sampleSize);
+                        SELECT
+                            channel,
+                            DATE_TRUNC('%s', time) as time_window,
+                            COUNT(*) as sample_count,
+                            AVG(value) as window_avg,
+                            MIN(value) as window_min,
+                            MAX(value) as window_max,
+                            STDDEV(value) as window_std
+                        FROM timeseriesfilt
+                        WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                        GROUP BY channel, time_window
+                        ORDER BY channel, time_window
+                        LIMIT %d
+                        """, timeGranularity, userId, startTime, endTime, volumeInfo.sampleSize);
 
                 // 简化的周期性分析
                 String periodicityQuery = String.format("""
-                    SELECT 
-                        channel,
-                        AVG(value) as mean_amplitude,
-                        STDDEV(value) as amplitude_variability,
-                        COUNT(*) as sample_count,
-                        MIN(value) as min_value,
-                        MAX(value) as max_value
-                    FROM timeseriesfilt 
-                    WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                    GROUP BY channel
-                    ORDER BY channel
-                    """, userId, startTime, endTime);
+                        SELECT
+                            channel,
+                            AVG(value) as mean_amplitude,
+                            STDDEV(value) as amplitude_variability,
+                            COUNT(*) as sample_count,
+                            MIN(value) as min_value,
+                            MAX(value) as max_value
+                        FROM timeseriesfilt
+                        WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                        GROUP BY channel
+                        ORDER BY channel
+                        """, userId, startTime, endTime);
 
                 String changeAnalysisData = influxDBService.queryData(changeAnalysisQuery, "json").block();
                 String periodicityData = influxDBService.queryData(periodicityQuery, "json").block();
@@ -284,43 +276,44 @@ public class EEGDataAnalysisService {
     /**
      * 【优化】空间特征分析 - 减少数据传输
      */
-    private CompletableFuture<SpatialFeatureSummary> generateSpatialFeatureSummaryOptimized(Long userId, String startTime, String endTime, DataVolumeInfo volumeInfo) {
+    private CompletableFuture<SpatialFeatureSummary> generateSpatialFeatureSummaryOptimized(Long userId,
+            String startTime, String endTime, DataVolumeInfo volumeInfo) {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 // 通道统计分析 - 总是使用聚合
                 String channelStatsQuery = String.format("""
-                    SELECT 
-                        channel,
-                        AVG(value) as mean_activity,
-                        STDDEV(value) as std_activity,
-                        COUNT(*) as sample_count,
-                        MIN(value) as min_activity,
-                        MAX(value) as max_activity
-                    FROM timeseriesfilt 
-                    WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                    GROUP BY channel
-                    ORDER BY channel
-                    """, userId, startTime, endTime);
+                        SELECT
+                            channel,
+                            AVG(value) as mean_activity,
+                            STDDEV(value) as std_activity,
+                            COUNT(*) as sample_count,
+                            MIN(value) as min_activity,
+                            MAX(value) as max_activity
+                        FROM timeseriesfilt
+                        WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                        GROUP BY channel
+                        ORDER BY channel
+                        """, userId, startTime, endTime);
 
                 // 电极区域分析
                 String regionalQuery = String.format("""
-                    SELECT 
-                        CASE 
-                            WHEN channel IN (1, 2) THEN 'Frontal'
-                            WHEN channel IN (3, 4) THEN 'Central'
-                            WHEN channel IN (5, 6) THEN 'Parietal'
-                            WHEN channel IN (7, 8) THEN 'Occipital'
-                            ELSE 'Unknown'
-                        END as brain_region,
-                        AVG(value) as mean_activity,
-                        STDDEV(value) as std_activity,
-                        COUNT(*) as sample_count,
-                        COUNT(DISTINCT channel) as active_channels
-                    FROM timeseriesfilt 
-                    WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                    GROUP BY brain_region
-                    ORDER BY brain_region
-                    """, userId, startTime, endTime);
+                        SELECT
+                            CASE
+                                WHEN channel IN (1, 2) THEN 'Frontal'
+                                WHEN channel IN (3, 4) THEN 'Central'
+                                WHEN channel IN (5, 6) THEN 'Parietal'
+                                WHEN channel IN (7, 8) THEN 'Occipital'
+                                ELSE 'Unknown'
+                            END as brain_region,
+                            AVG(value) as mean_activity,
+                            STDDEV(value) as std_activity,
+                            COUNT(*) as sample_count,
+                            COUNT(DISTINCT channel) as active_channels
+                        FROM timeseriesfilt
+                        WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                        GROUP BY brain_region
+                        ORDER BY brain_region
+                        """, userId, startTime, endTime);
 
                 String channelStatsData = influxDBService.queryData(channelStatsQuery, "json").block();
                 String regionalData = influxDBService.queryData(regionalQuery, "json").block();
@@ -336,37 +329,38 @@ public class EEGDataAnalysisService {
 
     // ========== 基础方法保持不变 ==========
 
-    private CompletableFuture<BasicStatsSummary> generateBasicStatsSummary(Long userId, String startTime, String endTime) {
+    private CompletableFuture<BasicStatsSummary> generateBasicStatsSummary(Long userId, String startTime,
+            String endTime) {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 // 基础统计查询保持简单
                 String rawStatsQuery = String.format("""
-                    SELECT 
-                        channel,
-                        COUNT(*) as sample_count,
-                        MIN(value) as min_value,
-                        MAX(value) as max_value,
-                        AVG(value) as mean_value,
-                        STDDEV(value) as std_value
-                    FROM timeseriesraw 
-                    WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                    GROUP BY channel
-                    ORDER BY channel
-                    """, userId, startTime, endTime);
+                        SELECT
+                            channel,
+                            COUNT(*) as sample_count,
+                            MIN(value) as min_value,
+                            MAX(value) as max_value,
+                            AVG(value) as mean_value,
+                            STDDEV(value) as std_value
+                        FROM timeseriesraw
+                        WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                        GROUP BY channel
+                        ORDER BY channel
+                        """, userId, startTime, endTime);
 
                 String filtStatsQuery = String.format("""
-                    SELECT 
-                        channel,
-                        COUNT(*) as sample_count,
-                        MIN(value) as min_value,
-                        MAX(value) as max_value,
-                        AVG(value) as mean_value,
-                        STDDEV(value) as std_value
-                    FROM timeseriesfilt 
-                    WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                    GROUP BY channel
-                    ORDER BY channel
-                    """, userId, startTime, endTime);
+                        SELECT
+                            channel,
+                            COUNT(*) as sample_count,
+                            MIN(value) as min_value,
+                            MAX(value) as max_value,
+                            AVG(value) as mean_value,
+                            STDDEV(value) as std_value
+                        FROM timeseriesfilt
+                        WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                        GROUP BY channel
+                        ORDER BY channel
+                        """, userId, startTime, endTime);
 
                 String rawStats = influxDBService.queryData(rawStatsQuery, "json").block();
                 String filtStats = influxDBService.queryData(filtStatsQuery, "json").block();
@@ -380,45 +374,48 @@ public class EEGDataAnalysisService {
         });
     }
 
-    private CompletableFuture<DataQualitySummary> generateDataQualitySummary(Long userId, String startTime, String endTime) {
+    private CompletableFuture<DataQualitySummary> generateDataQualitySummary(Long userId, String startTime,
+            String endTime) {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 // 数据质量查询保持简单聚合
                 String dataIntegrityQuery = String.format("""
-                    SELECT 
-                        COUNT(DISTINCT channel) as unique_channels,
-                        COUNT(*) as total_samples,
-                        MIN(time) as first_timestamp,
-                        MAX(time) as last_timestamp
-                    FROM timeseriesraw 
-                    WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                    """, userId, startTime, endTime);
+                        SELECT
+                            COUNT(DISTINCT channel) as unique_channels,
+                            COUNT(*) as total_samples,
+                            MIN(time) as first_timestamp,
+                            MAX(time) as last_timestamp
+                        FROM timeseriesraw
+                        WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                        """, userId, startTime, endTime);
 
                 String outlierQuery = String.format("""
-                    SELECT 
-                        channel,
-                        COUNT(*) as total_count,
-                        AVG(value) as mean_val,
-                        STDDEV(value) as std_val,
-                        MIN(value) as min_val,
-                        MAX(value) as max_val
-                    FROM timeseriesraw 
-                    WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                    GROUP BY channel
-                    ORDER BY channel
-                    """, userId, startTime, endTime);
+                        SELECT
+                            channel,
+                            COUNT(*) as total_count,
+                            AVG(value) as mean_val,
+                            STDDEV(value) as std_val,
+                            MIN(value) as min_val,
+                            MAX(value) as max_val
+                        FROM timeseriesraw
+                        WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                        GROUP BY channel
+                        ORDER BY channel
+                        """, userId, startTime, endTime);
 
-                String signalQualityQuery = String.format("""
-                    SELECT 
-                        channel,
-                        STDDEV(value) / CASE WHEN AVG(ABS(value)) = 0 THEN 1 ELSE AVG(ABS(value)) END as coefficient_of_variation,
-                        COUNT(CASE WHEN ABS(value) > 200 THEN 1 END) as saturation_count,
-                        COUNT(*) as total_count
-                    FROM timeseriesraw 
-                    WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-                    GROUP BY channel
-                    ORDER BY channel
-                    """, userId, startTime, endTime);
+                String signalQualityQuery = String.format(
+                        """
+                                SELECT
+                                    channel,
+                                    STDDEV(value) / CASE WHEN AVG(ABS(value)) = 0 THEN 1 ELSE AVG(ABS(value)) END as coefficient_of_variation,
+                                    COUNT(CASE WHEN ABS(value) > 200 THEN 1 END) as saturation_count,
+                                    COUNT(*) as total_count
+                                FROM timeseriesraw
+                                WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                                GROUP BY channel
+                                ORDER BY channel
+                                """,
+                        userId, startTime, endTime);
 
                 String integrityData = influxDBService.queryData(dataIntegrityQuery, "json").block();
                 String outlierData = influxDBService.queryData(outlierQuery, "json").block();
@@ -436,7 +433,7 @@ public class EEGDataAnalysisService {
     // ========== 智能特征提取方法（优化版本） ==========
 
     public CompletableFuture<Map<String, Object>> extractTargetedFeatures(Long userId, Long sessionId,
-                                                                          ResearchContext context) {
+            ResearchContext context) {
         return CompletableFuture.supplyAsync(() -> {
             Map<String, Object> features = new HashMap<>();
 
@@ -448,9 +445,9 @@ public class EEGDataAnalysisService {
                         .orElseThrow(() -> new RuntimeException("会话不存在"));
 
                 String startTime = session.getSessionStartTimeUtc().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
-                String endTime = session.getSessionEndTimeUtc() != null ?
-                        session.getSessionEndTimeUtc().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) :
-                        LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+                String endTime = session.getSessionEndTimeUtc() != null
+                        ? session.getSessionEndTimeUtc().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                        : LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
 
                 // 评估数据量
                 DataVolumeInfo volumeInfo = assessDataVolume(userId, startTime, endTime);
@@ -458,23 +455,29 @@ public class EEGDataAnalysisService {
                 // 根据研究上下文选择相关特征（优化版本）
                 switch (context.getResearchType()) {
                     case ATTENTION_MONITORING:
-                        features.put("attention_features", extractAttentionFeaturesOptimized(userId, startTime, endTime, volumeInfo));
+                        features.put("attention_features",
+                                extractAttentionFeaturesOptimized(userId, startTime, endTime, volumeInfo));
                         break;
                     case MEDITATION_ANALYSIS:
-                        features.put("meditation_features", extractMeditationFeaturesOptimized(userId, startTime, endTime, volumeInfo));
+                        features.put("meditation_features",
+                                extractMeditationFeaturesOptimized(userId, startTime, endTime, volumeInfo));
                         break;
                     case COGNITIVE_LOAD:
-                        features.put("cognitive_features", extractCognitiveLoadFeaturesOptimized(userId, startTime, endTime, volumeInfo));
+                        features.put("cognitive_features",
+                                extractCognitiveLoadFeaturesOptimized(userId, startTime, endTime, volumeInfo));
                         break;
                     case SLEEP_ANALYSIS:
-                        features.put("sleep_features", extractSleepFeaturesOptimized(userId, startTime, endTime, volumeInfo));
+                        features.put("sleep_features",
+                                extractSleepFeaturesOptimized(userId, startTime, endTime, volumeInfo));
                         break;
                     case EMOTIONAL_STATE:
-                        features.put("emotion_features", extractEmotionalFeaturesOptimized(userId, startTime, endTime, volumeInfo));
+                        features.put("emotion_features",
+                                extractEmotionalFeaturesOptimized(userId, startTime, endTime, volumeInfo));
                         break;
                     case GENERAL_ANALYSIS:
                     default:
-                        features.put("general_features", extractGeneralFeaturesOptimized(userId, startTime, endTime, volumeInfo));
+                        features.put("general_features",
+                                extractGeneralFeaturesOptimized(userId, startTime, endTime, volumeInfo));
                         break;
                 }
 
@@ -493,20 +496,21 @@ public class EEGDataAnalysisService {
 
     // ========== 优化的特征提取方法 ==========
 
-    private Map<String, Object> extractAttentionFeaturesOptimized(Long userId, String startTime, String endTime, DataVolumeInfo volumeInfo) {
+    private Map<String, Object> extractAttentionFeaturesOptimized(Long userId, String startTime, String endTime,
+            DataVolumeInfo volumeInfo) {
         Map<String, Object> features = new HashMap<>();
 
         String betaAlphaQuery = String.format("""
-            SELECT 
-                AVG(CASE WHEN band = 'beta' THEN value END) as avg_beta_power,
-                AVG(CASE WHEN band = 'alpha' THEN value END) as avg_alpha_power,
-                STDDEV(CASE WHEN band = 'beta' THEN value END) as std_beta_power,
-                STDDEV(CASE WHEN band = 'alpha' THEN value END) as std_alpha_power,
-                COUNT(*) as sample_count
-            FROM avg_band_power 
-            WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-            AND band IN ('beta', 'alpha')
-            """, userId, startTime, endTime);
+                SELECT
+                    AVG(CASE WHEN band = 'beta' THEN value END) as avg_beta_power,
+                    AVG(CASE WHEN band = 'alpha' THEN value END) as avg_alpha_power,
+                    STDDEV(CASE WHEN band = 'beta' THEN value END) as std_beta_power,
+                    STDDEV(CASE WHEN band = 'alpha' THEN value END) as std_alpha_power,
+                    COUNT(*) as sample_count
+                FROM avg_band_power
+                WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                AND band IN ('beta', 'alpha')
+                """, userId, startTime, endTime);
 
         try {
             String result = influxDBService.queryData(betaAlphaQuery, "json").block();
@@ -521,23 +525,24 @@ public class EEGDataAnalysisService {
         return features;
     }
 
-    private Map<String, Object> extractMeditationFeaturesOptimized(Long userId, String startTime, String endTime, DataVolumeInfo volumeInfo) {
+    private Map<String, Object> extractMeditationFeaturesOptimized(Long userId, String startTime, String endTime,
+            DataVolumeInfo volumeInfo) {
         Map<String, Object> features = new HashMap<>();
 
         String meditationQuery = String.format("""
-            SELECT 
-                band,
-                AVG(value) as mean_power,
-                STDDEV(value) as power_stability,
-                MIN(value) as min_power,
-                MAX(value) as max_power,
-                COUNT(*) as measurement_count
-            FROM avg_band_power 
-            WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-            AND band IN ('alpha', 'theta', 'beta')
-            GROUP BY band
-            ORDER BY band
-            """, userId, startTime, endTime);
+                SELECT
+                    band,
+                    AVG(value) as mean_power,
+                    STDDEV(value) as power_stability,
+                    MIN(value) as min_power,
+                    MAX(value) as max_power,
+                    COUNT(*) as measurement_count
+                FROM avg_band_power
+                WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                AND band IN ('alpha', 'theta', 'beta')
+                GROUP BY band
+                ORDER BY band
+                """, userId, startTime, endTime);
 
         try {
             String result = influxDBService.queryData(meditationQuery, "json").block();
@@ -551,27 +556,29 @@ public class EEGDataAnalysisService {
         return features;
     }
 
-    private Map<String, Object> extractCognitiveLoadFeaturesOptimized(Long userId, String startTime, String endTime, DataVolumeInfo volumeInfo) {
+    private Map<String, Object> extractCognitiveLoadFeaturesOptimized(Long userId, String startTime, String endTime,
+            DataVolumeInfo volumeInfo) {
         Map<String, Object> features = new HashMap<>();
 
         String cognitiveQuery = String.format("""
-            SELECT 
-                band,
-                AVG(value) as mean_power,
-                STDDEV(value) as power_variability,
-                MAX(value) - MIN(value) as power_range,
-                COUNT(*) as sample_count
-            FROM avg_band_power 
-            WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-            AND band IN ('theta', 'alpha', 'beta')
-            GROUP BY band
-            ORDER BY band
-            """, userId, startTime, endTime);
+                SELECT
+                    band,
+                    AVG(value) as mean_power,
+                    STDDEV(value) as power_variability,
+                    MAX(value) - MIN(value) as power_range,
+                    COUNT(*) as sample_count
+                FROM avg_band_power
+                WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                AND band IN ('theta', 'alpha', 'beta')
+                GROUP BY band
+                ORDER BY band
+                """, userId, startTime, endTime);
 
         try {
             String result = influxDBService.queryData(cognitiveQuery, "json").block();
             features.put("cognitive_load_analysis", result);
-            features.put("cognitive_indicators", List.of("Theta power increase", "Beta variability", "Alpha suppression"));
+            features.put("cognitive_indicators",
+                    List.of("Theta power increase", "Beta variability", "Alpha suppression"));
         } catch (Exception e) {
             features.put("error", "认知负荷特征提取失败: " + e.getMessage());
         }
@@ -579,19 +586,20 @@ public class EEGDataAnalysisService {
         return features;
     }
 
-    private Map<String, Object> extractSleepFeaturesOptimized(Long userId, String startTime, String endTime, DataVolumeInfo volumeInfo) {
+    private Map<String, Object> extractSleepFeaturesOptimized(Long userId, String startTime, String endTime,
+            DataVolumeInfo volumeInfo) {
         Map<String, Object> features = new HashMap<>();
 
         String sleepQuery = String.format("""
-            SELECT 
-                AVG(CASE WHEN band = 'delta' THEN value END) as mean_delta_power,
-                AVG(CASE WHEN band = 'theta' THEN value END) as mean_theta_power,
-                AVG(CASE WHEN band = 'alpha' THEN value END) as mean_alpha_power,
-                AVG(CASE WHEN band = 'beta' THEN value END) as mean_beta_power,
-                COUNT(*) as total_measurements
-            FROM avg_band_power 
-            WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-            """, userId, startTime, endTime);
+                SELECT
+                    AVG(CASE WHEN band = 'delta' THEN value END) as mean_delta_power,
+                    AVG(CASE WHEN band = 'theta' THEN value END) as mean_theta_power,
+                    AVG(CASE WHEN band = 'alpha' THEN value END) as mean_alpha_power,
+                    AVG(CASE WHEN band = 'beta' THEN value END) as mean_beta_power,
+                    COUNT(*) as total_measurements
+                FROM avg_band_power
+                WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                """, userId, startTime, endTime);
 
         try {
             String result = influxDBService.queryData(sleepQuery, "json").block();
@@ -604,24 +612,25 @@ public class EEGDataAnalysisService {
         return features;
     }
 
-    private Map<String, Object> extractEmotionalFeaturesOptimized(Long userId, String startTime, String endTime, DataVolumeInfo volumeInfo) {
+    private Map<String, Object> extractEmotionalFeaturesOptimized(Long userId, String startTime, String endTime,
+            DataVolumeInfo volumeInfo) {
         Map<String, Object> features = new HashMap<>();
 
         String emotionQuery = String.format("""
-            SELECT 
-                CASE 
-                    WHEN channel IN (1, 3, 5, 7) THEN 'left_hemisphere'
-                    WHEN channel IN (2, 4, 6, 8) THEN 'right_hemisphere'
-                    ELSE 'unknown'
-                END as hemisphere,
-                AVG(value) as mean_activity,
-                STDDEV(value) as activity_variability,
-                COUNT(*) as sample_count
-            FROM timeseriesfilt 
-            WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-            GROUP BY hemisphere
-            ORDER BY hemisphere
-            """, userId, startTime, endTime);
+                SELECT
+                    CASE
+                        WHEN channel IN (1, 3, 5, 7) THEN 'left_hemisphere'
+                        WHEN channel IN (2, 4, 6, 8) THEN 'right_hemisphere'
+                        ELSE 'unknown'
+                    END as hemisphere,
+                    AVG(value) as mean_activity,
+                    STDDEV(value) as activity_variability,
+                    COUNT(*) as sample_count
+                FROM timeseriesfilt
+                WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                GROUP BY hemisphere
+                ORDER BY hemisphere
+                """, userId, startTime, endTime);
 
         try {
             String result = influxDBService.queryData(emotionQuery, "json").block();
@@ -634,22 +643,23 @@ public class EEGDataAnalysisService {
         return features;
     }
 
-    private Map<String, Object> extractGeneralFeaturesOptimized(Long userId, String startTime, String endTime, DataVolumeInfo volumeInfo) {
+    private Map<String, Object> extractGeneralFeaturesOptimized(Long userId, String startTime, String endTime,
+            DataVolumeInfo volumeInfo) {
         Map<String, Object> features = new HashMap<>();
 
         String generalQuery = String.format("""
-            SELECT 
-                band,
-                AVG(value) as mean_power,
-                MIN(value) as min_power,
-                MAX(value) as max_power,
-                STDDEV(value) as std_power,
-                COUNT(*) as sample_count
-            FROM avg_band_power 
-            WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
-            GROUP BY band
-            ORDER BY band
-            """, userId, startTime, endTime);
+                SELECT
+                    band,
+                    AVG(value) as mean_power,
+                    MIN(value) as min_power,
+                    MAX(value) as max_power,
+                    STDDEV(value) as std_power,
+                    COUNT(*) as sample_count
+                FROM avg_band_power
+                WHERE user_id = '%s' AND time >= '%s' AND time <= '%s'
+                GROUP BY band
+                ORDER BY band
+                """, userId, startTime, endTime);
 
         try {
             String result = influxDBService.queryData(generalQuery, "json").block();
@@ -687,7 +697,8 @@ public class EEGDataAnalysisService {
 
     // ========== 解析方法（保持原有逻辑，增加优化信息） ==========
 
-    private FrequencyDomainSummary parseFrequencyDomainStatsOptimized(String bandPowerStats, String bandTrendData, DataVolumeInfo volumeInfo) {
+    private FrequencyDomainSummary parseFrequencyDomainStatsOptimized(String bandPowerStats, String bandTrendData,
+            DataVolumeInfo volumeInfo) {
         FrequencyDomainSummary summary = new FrequencyDomainSummary();
         try {
             Map<String, Object> bandPowerStatsMap = new HashMap<>();
@@ -725,12 +736,14 @@ public class EEGDataAnalysisService {
         return summary;
     }
 
-    private TemporalPatternSummary parseTemporalPatternsOptimized(String changeAnalysisData, String periodicityData, SummaryConfig config, DataVolumeInfo volumeInfo) {
+    private TemporalPatternSummary parseTemporalPatternsOptimized(String changeAnalysisData, String periodicityData,
+            SummaryConfig config, DataVolumeInfo volumeInfo) {
         TemporalPatternSummary summary = new TemporalPatternSummary();
         try {
             Map<String, Object> temporalFeatures = new HashMap<>();
 
-            if (changeAnalysisData != null && !changeAnalysisData.trim().isEmpty() && !"[]".equals(changeAnalysisData.trim())) {
+            if (changeAnalysisData != null && !changeAnalysisData.trim().isEmpty()
+                    && !"[]".equals(changeAnalysisData.trim())) {
                 JsonNode changeNode = objectMapper.readTree(changeAnalysisData);
                 if (changeNode.isArray() && changeNode.size() > 0) {
                     temporalFeatures.put("time_windows_analyzed", changeNode.size());
@@ -755,7 +768,8 @@ public class EEGDataAnalysisService {
         return summary;
     }
 
-    private SpatialFeatureSummary parseSpatialFeaturesOptimized(String channelStatsData, String regionalData, DataVolumeInfo volumeInfo) {
+    private SpatialFeatureSummary parseSpatialFeaturesOptimized(String channelStatsData, String regionalData,
+            DataVolumeInfo volumeInfo) {
         SpatialFeatureSummary summary = new SpatialFeatureSummary();
         try {
             Map<String, Object> regionAnalysis = new HashMap<>();
@@ -777,8 +791,7 @@ public class EEGDataAnalysisService {
 
             summary.setChannelCorrelations(Map.of(
                     "analysis_type", "optimized_spatial_analysis",
-                    "strategy", volumeInfo.queryStrategy.toString()
-            ));
+                    "strategy", volumeInfo.queryStrategy.toString()));
             summary.setBrainRegions(List.of("Frontal", "Central", "Parietal", "Occipital"));
             summary.setSpatialPatterns("Optimized Analysis");
             summary.setRegionAnalysis(regionAnalysis);
@@ -925,8 +938,7 @@ public class EEGDataAnalysisService {
                 "sample_size", volumeInfo.sampleSize,
                 "aggregation_used", volumeInfo.useAggregation,
                 "raw_data_count", volumeInfo.rawDataCount,
-                "band_data_count", volumeInfo.bandDataCount
-        ));
+                "band_data_count", volumeInfo.bandDataCount));
         return info;
     }
 
@@ -945,9 +957,9 @@ public class EEGDataAnalysisService {
     // ========== 数据类定义 ==========
 
     public enum QueryStrategy {
-        FULL_DATA,           // 全数据查询
-        MODERATE_SAMPLING,   // 中等采样
-        AGGRESSIVE_SAMPLING  // 积极采样
+        FULL_DATA, // 全数据查询
+        MODERATE_SAMPLING, // 中等采样
+        AGGRESSIVE_SAMPLING // 积极采样
     }
 
     @Data

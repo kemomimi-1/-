@@ -325,40 +325,40 @@ public class EEGConnectionController {
             Map<String, Object> streams = new HashMap<>();
 
             // TimeSeriesRaw流状态
-            streams.put("raw", Map.of(
-                    "streamType", "TimeSeriesRaw",
-                    "description", "原始脑电数据流",
-                    "status", sessionData.getRawStreamStatus(),
-                    "startTime", sessionData.getRawStreamStartTimeUtc(),
-                    "lastPacketTime", sessionData.getRawStreamLastPacketTimeUtc(),
-                    "totalPackets", sessionData.getRawStreamTotalPackets(),
-                    "port", sessionData.getRawPort(),
-                    "isActive", sessionData.getRawStreamStatus() == com.eeg.entity.EEGSession.StreamStatus.ACTIVE
-            ));
+            Map<String, Object> rawStream = new HashMap<>();
+            rawStream.put("streamType", "TimeSeriesRaw");
+            rawStream.put("description", "原始脑电数据流");
+            rawStream.put("status", sessionData.getRawStreamStatus());
+            rawStream.put("startTime", sessionData.getRawStreamStartTimeUtc());
+            rawStream.put("lastPacketTime", sessionData.getRawStreamLastPacketTimeUtc());
+            rawStream.put("totalPackets", sessionData.getRawStreamTotalPackets());
+            rawStream.put("port", sessionData.getRawPort());
+            rawStream.put("isActive", sessionData.getRawStreamStatus() == com.eeg.entity.EEGSession.StreamStatus.ACTIVE);
+            streams.put("raw", rawStream);
 
             // TimeSeriesFilt流状态
-            streams.put("filt", Map.of(
-                    "streamType", "TimeSeriesFilt",
-                    "description", "滤波脑电数据流",
-                    "status", sessionData.getFiltStreamStatus(),
-                    "startTime", sessionData.getFiltStreamStartTimeUtc(),
-                    "lastPacketTime", sessionData.getFiltStreamLastPacketTimeUtc(),
-                    "totalPackets", sessionData.getFiltStreamTotalPackets(),
-                    "port", sessionData.getFiltPort(),
-                    "isActive", sessionData.getFiltStreamStatus() == com.eeg.entity.EEGSession.StreamStatus.ACTIVE
-            ));
+            Map<String, Object> filtStream = new HashMap<>();
+            filtStream.put("streamType", "TimeSeriesFilt");
+            filtStream.put("description", "滤波脑电数据流");
+            filtStream.put("status", sessionData.getFiltStreamStatus());
+            filtStream.put("startTime", sessionData.getFiltStreamStartTimeUtc());
+            filtStream.put("lastPacketTime", sessionData.getFiltStreamLastPacketTimeUtc());
+            filtStream.put("totalPackets", sessionData.getFiltStreamTotalPackets());
+            filtStream.put("port", sessionData.getFiltPort());
+            filtStream.put("isActive", sessionData.getFiltStreamStatus() == com.eeg.entity.EEGSession.StreamStatus.ACTIVE);
+            streams.put("filt", filtStream);
 
             // AvgBandPower流状态
-            streams.put("band", Map.of(
-                    "streamType", "AvgBandPower",
-                    "description", "频段功率数据流",
-                    "status", sessionData.getBandStreamStatus(),
-                    "startTime", sessionData.getBandStreamStartTimeUtc(),
-                    "lastPacketTime", sessionData.getBandStreamLastPacketTimeUtc(),
-                    "totalPackets", sessionData.getBandStreamTotalPackets(),
-                    "port", sessionData.getBandPort(),
-                    "isActive", sessionData.getBandStreamStatus() == com.eeg.entity.EEGSession.StreamStatus.ACTIVE
-            ));
+            Map<String, Object> bandStream = new HashMap<>();
+            bandStream.put("streamType", "AvgBandPower");
+            bandStream.put("description", "频段功率数据流");
+            bandStream.put("status", sessionData.getBandStreamStatus());
+            bandStream.put("startTime", sessionData.getBandStreamStartTimeUtc());
+            bandStream.put("lastPacketTime", sessionData.getBandStreamLastPacketTimeUtc());
+            bandStream.put("totalPackets", sessionData.getBandStreamTotalPackets());
+            bandStream.put("port", sessionData.getBandPort());
+            bandStream.put("isActive", sessionData.getBandStreamStatus() == com.eeg.entity.EEGSession.StreamStatus.ACTIVE);
+            streams.put("band", bandStream);
 
             streamStatus.put("streams", streams);
             streamStatus.put("activeStreamCount", sessionData.getActiveStreamCount());
@@ -404,7 +404,7 @@ public class EEGConnectionController {
             if (connectionStatus.getConnectionStartTime() != null) {
                 connectionDurationSeconds = java.time.Duration.between(
                         connectionStatus.getConnectionStartTime(),
-                        LocalDateTime.now()
+                        LocalDateTime.now(java.time.ZoneOffset.UTC)
                 ).getSeconds();
             }
 

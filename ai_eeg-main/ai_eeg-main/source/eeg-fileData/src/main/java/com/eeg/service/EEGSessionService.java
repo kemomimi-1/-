@@ -313,6 +313,7 @@ public class EEGSessionService {
     /**
      * 【新增】带锁的结束会话方法 - 防止并发问题
      */
+    @SuppressWarnings("null")
     @Transactional(propagation = Propagation.REQUIRES_NEW, isolation = Isolation.SERIALIZABLE)
     public void endSessionWithLock(Long sessionId, String reason) {
         Optional<EEGSession> sessionOpt = sessionRepository.findById(sessionId);

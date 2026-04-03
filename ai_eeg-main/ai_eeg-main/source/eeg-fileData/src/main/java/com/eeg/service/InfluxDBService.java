@@ -44,6 +44,7 @@ public class InfluxDBService {
         log.info("InfluxDBService 初始化完成 - 最大缓冲区大小: {}MB", maxBufferSize / 1024 / 1024);
     }
 
+    @SuppressWarnings("null")
     public void writeLineProtocol(String lineProtocol) {
         try {
             // 使用InfluxDB 3 Core的v2兼容API，统一写入eeg_db数据库
@@ -69,6 +70,7 @@ public class InfluxDBService {
         }
     }
 
+    @SuppressWarnings("null")
     public Mono<String> queryData(String query) {
         String queryUrl = influxdbUrl + "/api/v3/query_sql";
 
@@ -109,6 +111,7 @@ public class InfluxDBService {
      * @param format 返回格式：json, jsonl, csv, pretty, parquet
      * @return 查询结果
      */
+    @SuppressWarnings("null")
     public Mono<String> queryData(String query, String format) {
         String queryUrl = influxdbUrl + "/api/v3/query_sql";
 
@@ -205,6 +208,7 @@ public class InfluxDBService {
      * @param query InfluxQL查询语句
      * @return 查询结果
      */
+    @SuppressWarnings("null")
     public Mono<String> queryInfluxQL(String query) {
         String queryUrl = influxdbUrl + "/api/v3/query_influxql";
 
