@@ -8,16 +8,20 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -43,7 +47,52 @@ public class RealTimeSpectrumAnalysisService {
     private int minSamples;
 
     @Value("${eeg.realtime-analysis.analysis-interval-seconds:30}")
-    private int analysisIntervalSeconds;
+    private volatile int analysisIntervalSeconds;
+
+    // 动态调度器
+    private ScheduledExecutorService analysisScheduler;
+
+    // 动态设置分析间隔（秒）
+    public void setAnalysisIntervalSeconds(int seconds) {
+        this.analysisIntervalSeconds = seconds;
+        log.info("分析间隔已动态更新为 {} 秒，将在下一轮生效", seconds);
+    }
+
+    @PostConstruct
+    public void initScheduler() {
+        analysisScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "eeg-analysis-scheduler");
+            t.setDaemon(true);
+            return t;
+        });
+        // 启动自调度循环
+        scheduleNextAnalysis();
+        log.info("动态分析调度器已启动，初始间隔: {} 秒", analysisIntervalSeconds);
+    }
+
+    @PreDestroy
+    public void destroyScheduler() {
+        if (analysisScheduler != null) {
+            analysisScheduler.shutdownNow();
+        }
+    }
+
+    /**
+     * 自调度：每次执行完后根据当前 analysisIntervalSeconds 安排下一次
+     */
+    private void scheduleNextAnalysis() {
+        if (analysisScheduler == null || analysisScheduler.isShutdown()) return;
+        analysisScheduler.schedule(() -> {
+            try {
+                performScheduledAnalysis();
+            } catch (Exception e) {
+                log.error("定时分析执行异常", e);
+            } finally {
+                // 递归调度下一次，间隔取最新值
+                scheduleNextAnalysis();
+            }
+        }, analysisIntervalSeconds, TimeUnit.SECONDS);
+    }
 
     // ========== 原有功能保持不变 ==========
 
@@ -117,9 +166,10 @@ public class RealTimeSpectrumAnalysisService {
             log.warn("获取用户 {} 最新数据时间失败，使用默认策略", userId, e);
         }
 
-        // fallback: 从5分钟前开始追新数据
-        lastAnalysisTimes.put(userId, LocalDateTime.now().minusMinutes(5));
-        log.info("用户 {} 分析游标使用默认值（当前时间-5分钟）", userId);
+        // fallback: 从5分钟前开始追新数据（使用UTC时间以匹配InfluxDB）
+        LocalDateTime utcNow = LocalDateTime.now(java.time.ZoneOffset.UTC);
+        lastAnalysisTimes.put(userId, utcNow.minusMinutes(5));
+        log.info("用户 {} 分析游标使用默认值（UTC当前时间-5分钟: {}）", userId, utcNow.minusMinutes(5));
     }
 
     /**
@@ -151,10 +201,8 @@ public class RealTimeSpectrumAnalysisService {
     }
 
     /**
-     * 定时分析任务 - 每30秒执行一次
+     * 定时分析任务 - 间隔由 analysisIntervalSeconds 动态控制
      */
-    @Scheduled(fixedRateString = "${eeg.realtime-analysis.analysis-interval-seconds:30}000")
-    @Async
     public void performScheduledAnalysis() {
         if (activeUsers.isEmpty()) {
             return;
@@ -203,6 +251,26 @@ public class RealTimeSpectrumAnalysisService {
             // 通过WebSocket推送弹幕
             sendBarrageNotification(userId, savedBarrage);
 
+            // 【大屏强化】将频段功率归一化值推送到前端 Neuro Status 面板
+            try {
+                Map<String, Double> norm = analysisResult.getNormalized();
+                if (norm != null && !norm.isEmpty()) {
+                    // 按前端期望的顺序构建数组: [delta, theta, alpha, beta, gamma]
+                    // normalized 值是 0~1 的比例，前端会自动计算百分比
+                    List<Double> bandPowerArray = List.of(
+                        norm.getOrDefault("delta", 0.0),
+                        norm.getOrDefault("theta", 0.0),
+                        norm.getOrDefault("alpha", 0.0),
+                        norm.getOrDefault("beta", 0.0),
+                        norm.getOrDefault("gamma", 0.0)
+                    );
+                    webSocketService.notifyUser(userId, "STREAM_BAND_POWER", bandPowerArray);
+                    log.info("用户 {} 推送频段功率到前端大屏: {}", userId, bandPowerArray);
+                }
+            } catch (Exception ex) {
+                log.warn("推送频段功率到前端失败: {}", ex.getMessage());
+            }
+
             // 更新游标为本次数据最新时间，下次从这里往后查
             updateAnalysisTimePoint(userId, spectralData.getEndTime());
 
@@ -248,21 +316,25 @@ public class RealTimeSpectrumAnalysisService {
 
         try {
             // 【核心修复】查比游标更新的数据，游标正向推进
+            // InfluxDB 3 存储的是 UTC 时间，游标也必须是 UTC
+            String cursorStr = cursor.format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
             String query = String.format(
                     "SELECT time, band, value FROM avg_band_power " +
                             "WHERE user_id = '%d' AND time > '%s' " +
                             "ORDER BY time ASC " +
                             "LIMIT %d",
                     userId,
-                    cursor.format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS")),
+                    cursorStr,
                     minSamples * 5
             );
 
-            log.debug("用户 {} 持续采样查询 - 游标: {}", userId, cursor);
+            log.debug("用户 {} 持续采样查询 - 游标: {}, 查询时间字符串: {}", userId, cursor, cursorStr);
 
             String jsonResponse = influxDBService.queryData(query, "json").block();
 
             if (jsonResponse != null && !jsonResponse.trim().isEmpty() && !jsonResponse.equals("[]")) {
+                log.info("用户 {} InfluxDB原始响应(前300字符): {}", userId,
+                    jsonResponse.length() > 300 ? jsonResponse.substring(0, 300) + "..." : jsonResponse);
                 SpectralData data = parseSpectralData(jsonResponse);
 
                 if (data != null && data.getSampleCount() >= minSamples) {

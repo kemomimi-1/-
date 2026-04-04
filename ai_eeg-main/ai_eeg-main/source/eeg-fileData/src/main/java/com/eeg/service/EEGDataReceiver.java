@@ -16,6 +16,8 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -344,6 +346,9 @@ public class EEGDataReceiver {
                 influxDBService.writeLineProtocol(lineProtocol.toString());
                 log.debug("写入 {} 数据到InfluxDB - 用户:{}, 数据点数:{}, UTC时间:{}",
                         dataType, userId, dataArray.size() * 10, utcPacketTime);
+                        
+                // 【实时大屏强化】借助 WebSocket 高频推送至前端图表，仅发送滤波后或原始数据以供渲染
+                webSocketService.notifyUser(userId, "STREAM_" + dataType.toUpperCase(), dataArray);
             }
         }
     }
@@ -363,22 +368,57 @@ public class EEGDataReceiver {
                     utcPacketTime.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME), timestampNanos);
 
             String[] bands = {"delta", "theta", "alpha", "beta", "gamma"};
-            for (int i = 0; i < Math.min(dataArray.size(), bands.length); i++) {
-                double value = dataArray.get(i).asDouble();
-
+            
+            // 【关键修复】OpenBCI BandPower格式是嵌套数组：
+            // [[ch1_delta, ch1_theta, ch1_alpha, ch1_beta, ch1_gamma], [ch2_...], ...]
+            // 需要跨通道求每个频段的平均值
+            double[] bandSums = new double[5];
+            int channelCount = 0;
+            
+            if (dataArray.size() > 0 && dataArray.get(0).isArray()) {
+                // 嵌套数组格式：每个元素是一个通道的5频段数据
+                for (JsonNode channelData : dataArray) {
+                    if (channelData.isArray() && channelData.size() >= 5) {
+                        for (int b = 0; b < 5; b++) {
+                            bandSums[b] += channelData.get(b).asDouble();
+                        }
+                        channelCount++;
+                    }
+                }
+                if (channelCount > 0) {
+                    for (int b = 0; b < 5; b++) {
+                        bandSums[b] /= channelCount;
+                    }
+                }
+                log.debug("BandPower嵌套格式 - {}个通道, 平均: delta={}, theta={}, alpha={}, beta={}, gamma={}",
+                    channelCount, bandSums[0], bandSums[1], bandSums[2], bandSums[3], bandSums[4]);
+            } else {
+                // 扁平数组格式：直接5个数值
+                for (int i = 0; i < Math.min(dataArray.size(), bands.length); i++) {
+                    bandSums[i] = dataArray.get(i).asDouble();
+                }
+                channelCount = 1;
+            }
+            
+            // 写入InfluxDB
+            for (int i = 0; i < bands.length; i++) {
                 lineProtocol.append("avg_band_power")
                         .append(",user_id=").append(userId)
                         .append(",band=").append(bands[i])
-                        .append(" value=").append(value)
+                        .append(" value=").append(bandSums[i])
                         .append(" ").append(timestampNanos)
                         .append("\n");
             }
 
-            // 写入InfluxDB
             if (lineProtocol.length() > 0) {
                 influxDBService.writeLineProtocol(lineProtocol.toString());
                 log.debug("写入频谱功率数据到InfluxDB - 用户:{}, 频段数:{}, UTC时间:{}",
                         userId, bands.length, utcPacketTime);
+                
+                // 【实时大屏强化】推送5频段平均值给前端
+                List<Double> bandPowerList = new ArrayList<>();
+                for (double v : bandSums) bandPowerList.add(v);
+                webSocketService.notifyUser(userId, "STREAM_BAND_POWER", bandPowerList);
             }
         }
     }

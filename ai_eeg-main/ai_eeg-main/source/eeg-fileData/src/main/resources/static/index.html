@@ -9,11 +9,34 @@
 </head>
 <body>
 <div class="app-container">
-    <!-- 顶部弹幕系统 -->
+    <!-- 顶部状态栏 + 弹幕系统 -->
     <div class="barrage-system">
-        <!-- 弹幕飘动区域 -->
         <div class="barrage-float-area" id="barrageFloatArea">
-            <!-- 控制按钮 -->
+            <!-- 左侧：品牌 + 状态 -->
+            <div class="topbar-left">
+                <div class="topbar-brand">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>
+                    </svg>
+                    <span class="topbar-title">EEG-AI</span>
+                </div>
+                <div class="topbar-divider"></div>
+                <div class="topbar-stats">
+                    <div class="topbar-stat" id="topbarConnStat">
+                        <span class="topbar-dot offline"></span>
+                        <span>未连接</span>
+                    </div>
+                    <div class="topbar-stat" id="topbarPacketStat">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22,12 18,12 15,21 9,3 6,12 2,12"></polyline></svg>
+                        <span id="topbarPacketCount">0 包</span>
+                    </div>
+                    <div class="topbar-stat" id="topbarRateStat">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
+                        <span id="topbarRate">0/s</span>
+                    </div>
+                </div>
+            </div>
+            <!-- 中间：弹幕控制 -->
             <div class="barrage-controls">
                 <button class="barrage-control-btn" id="startBarrageBtn" onclick="startRealTimeAnalysis()" title="开始实时分析">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -26,37 +49,13 @@
                     </svg>
                 </button>
             </div>
-
-            <!-- 展开按钮 -->
-            <button class="barrage-expand-btn" id="barrageExpandBtn" onclick="toggleBarrageSidebar()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="6,9 12,15 18,9"></polyline>
-                </svg>
-                历史弹幕
-            </button>
-        </div>
-
-        <!-- 历史弹幕侧边栏 -->
-        <div class="barrage-sidebar" id="barrageSidebar">
-            <div class="barrage-sidebar-header">
-                <h3 class="barrage-sidebar-title">实时分析历史记录</h3>
-                <button class="barrage-close-btn" onclick="toggleBarrageSidebar()">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                        <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
-                </button>
-            </div>
-            <div class="barrage-history">
-                <div class="barrage-list" id="barrageList">
-                    <div class="barrage-empty">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-                        </svg>
-                        暂无弹幕记录<br>
-                        <small>点击开始按钮启动实时分析</small>
-                    </div>
+            <!-- 右侧：时钟 + 状态标签 -->
+            <div class="topbar-right">
+                <div class="topbar-stat" id="topbarAnalysisStat">
+                    <span class="topbar-analysis-badge" id="topbarAnalysisBadge">待机</span>
                 </div>
+                <div class="topbar-divider"></div>
+                <div class="topbar-clock" id="topbarClock">--:--:--</div>
             </div>
         </div>
     </div>
@@ -170,18 +169,14 @@
         </div>
 
         <!-- 右侧边栏 -->
-        <div class="right-sidebar" id="rightSidebar">
+        
+        <!-- 新增右侧选项卡容器区 -->
+        <div class="right-sidebar-wrapper" id="rightSidebarWrapper">
+            <div class="right-sidebar" id="rightSidebar">
+                <!-- 第一页：核心控制面板 -->
+                <div id="panel-control" class="sidebar-panel active">
             <div class="right-sidebar-header">
                 <h3 class="sidebar-title">智能控制面板</h3>
-                <button class="sidebar-toggle" onclick="toggleRightSidebar()">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="15,18 9,12 15,6"></polyline>
-                    </svg>
-                </button>
-            </div>
-
-            <div class="collapsed-indicator">
-                📊
             </div>
 
             <div class="right-sidebar-content">
@@ -358,6 +353,218 @@
                     </div>
                 </div>
             </div>
+                </div> <!-- 结束 panel-control -->
+
+                <!-- 第二页：高级脑电监控面版 Neuro Status -->
+                <div id="panel-dashboard" class="sidebar-panel" style="display: none;">
+                    <div class="neuro-status-header" style="display:flex; justify-content:space-between; align-items:center; padding:16px;">
+                        <h3 style="margin:0; font-weight:800; color:#1e293b; font-size:16px;">神经状态</h3>
+                        <span style="color:#94a3b8; font-weight:bold;">...</span>
+                    </div>
+                    
+                    <div class="neuro-status-content" style="padding: 0 16px 16px 16px; overflow-y:auto;">
+                        <!-- Alpha Card -->
+                        <div class="neuro-card">
+                            <div class="neuro-info">
+                                <span class="n-label">Alpha <span class="eeg-help" data-tip="8-13Hz | 清醒放松态，闭眼冥想时增强">?</span></span><span class="n-val" id="val-alpha">0%</span>
+                            </div>
+                            <div class="neuro-vis">
+                                <canvas id="wave-alpha" class="mini-wave" width="100" height="30"></canvas>
+                                <svg viewBox="0 0 36 36" class="n-gauge">
+                                    <path class="circle-bg" d="M18 2 a 16 16 0 0 1 0 32 a 16 16 0 0 1 0 -32" />
+                                    <path class="circle alpha-line" stroke-dasharray="0, 100" id="gauge-alpha" d="M18 2 a 16 16 0 0 1 0 32 a 16 16 0 0 1 0 -32" />
+                                </svg>
+                            </div>
+                        </div>
+
+                        <!-- Beta Card -->
+                        <div class="neuro-card">
+                            <div class="neuro-info">
+                                <span class="n-label">Beta <span class="eeg-help" data-tip="13-30Hz | 活跃思维态，专注和紧张时增强">?</span></span><span class="n-val" id="val-beta">0%</span>
+                            </div>
+                            <div class="neuro-vis">
+                                <canvas id="wave-beta" class="mini-wave" width="100" height="30"></canvas>
+                                <svg viewBox="0 0 36 36" class="n-gauge">
+                                    <path class="circle-bg" d="M18 2 a 16 16 0 0 1 0 32 a 16 16 0 0 1 0 -32" />
+                                    <path class="circle beta-line" stroke-dasharray="0, 100" id="gauge-beta" d="M18 2 a 16 16 0 0 1 0 32 a 16 16 0 0 1 0 -32" />
+                                </svg>
+                            </div>
+                        </div>
+
+                        <!-- Theta Card -->
+                        <div class="neuro-card">
+                            <div class="neuro-info">
+                                <span class="n-label">Theta <span class="eeg-help" data-tip="4-8Hz | 浅睡/冥想态，创造力和记忆相关">?</span></span><span class="n-val" id="val-theta">0%</span>
+                            </div>
+                            <div class="neuro-vis">
+                                <canvas id="wave-theta" class="mini-wave" width="100" height="30"></canvas>
+                                <svg viewBox="0 0 36 36" class="n-gauge">
+                                    <path class="circle-bg" d="M18 2 a 16 16 0 0 1 0 32 a 16 16 0 0 1 0 -32" />
+                                    <path class="circle theta-line" stroke-dasharray="0, 100" id="gauge-theta" d="M18 2 a 16 16 0 0 1 0 32 a 16 16 0 0 1 0 -32" />
+                                </svg>
+                            </div>
+                        </div>
+
+                        <!-- Delta Card -->
+                        <div class="neuro-card">
+                            <div class="neuro-info">
+                                <span class="n-label">Delta <span class="eeg-help" data-tip="0.5-4Hz | 深度睡眠态，组织修复和恢复">?</span></span><span class="n-val" id="val-delta">0%</span>
+                            </div>
+                            <div class="neuro-vis">
+                                <canvas id="wave-delta" class="mini-wave" width="100" height="30"></canvas>
+                                <svg viewBox="0 0 36 36" class="n-gauge">
+                                    <path class="circle-bg" d="M18 2 a 16 16 0 0 1 0 32 a 16 16 0 0 1 0 -32" />
+                                    <path class="circle delta-line" stroke-dasharray="0, 100" id="gauge-delta" d="M18 2 a 16 16 0 0 1 0 32 a 16 16 0 0 1 0 -32" />
+                                </svg>
+                            </div>
+                        </div>
+
+                        <!-- Gamma Card -->
+                        <div class="neuro-card">
+                            <div class="neuro-info">
+                                <span class="n-label">Gamma <span class="eeg-help" data-tip="30-100Hz | 高级认知态，学习和信息整合">?</span></span><span class="n-val" id="val-gamma">0%</span>
+                            </div>
+                            <div class="neuro-vis">
+                                <canvas id="wave-gamma" class="mini-wave" width="100" height="30"></canvas>
+                                <svg viewBox="0 0 36 36" class="n-gauge">
+                                    <path class="circle-bg" d="M18 2 a 16 16 0 0 1 0 32 a 16 16 0 0 1 0 -32" />
+                                    <path class="circle gamma-line" stroke-dasharray="0, 100" id="gauge-gamma" d="M18 2 a 16 16 0 0 1 0 32 a 16 16 0 0 1 0 -32" />
+                                </svg>
+                            </div>
+                        </div>
+
+                        <!-- Real-Time EEG -->
+                        <div class="realtime-section">
+                            <div class="section-head">
+                                <h4>实时脑电</h4>
+                                <span>...</span>
+                            </div>
+                            <div class="eeg-canvas-box">
+                                <div class="eeg-labels">
+                                    <div class="eeg-label-row">
+                                        <span>Fp1-F1</span>
+                                        <span class="eeg-help" data-tip="左前额极→左额 | 监测左前额叶脑电活动">?</span>
+                                    </div>
+                                    <div class="eeg-label-row">
+                                        <span>Fp2-F7</span>
+                                        <span class="eeg-help" data-tip="右前额极→左颞 | 监测额-颞叶跨区活动">?</span>
+                                    </div>
+                                    <div class="eeg-label-row">
+                                        <span>Fp1-F8</span>
+                                        <span class="eeg-help" data-tip="左前额极→右颞 | 监测额-颞叶跨区活动">?</span>
+                                    </div>
+                                    <div class="eeg-label-row">
+                                        <span>Fp2-F8</span>
+                                        <span class="eeg-help" data-tip="右前额极→右颞 | 监测右额颞区脑电活动">?</span>
+                                    </div>
+                                </div>
+                                <canvas id="mainEegCanvas" style="flex:1; height:150px; display:block;"></canvas>
+                            </div>
+                        </div>
+
+
+                    </div>
+                </div> <!-- 结束 panel-dashboard -->
+
+                <!-- 通知下拉浮层 -->
+                <div class="notif-dropdown" id="notifDropdown">
+                    <div class="notif-panel-header">
+                        <h3>通知</h3>
+                        <button class="notif-clear-btn" onclick="clearAllNotifs()" title="全部已读">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                        </button>
+                    </div>
+                    <div class="notif-panel-body">
+                        <div class="barrage-list" id="barrageList">
+                            <div class="barrage-empty">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                                    <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                                </svg>
+                                暂无通知<br>
+                                <small>启动实时分析后，分析结果将显示在这里</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 设置面板 -->
+                <div id="panel-settings" class="sidebar-panel" style="display: none;">
+                    <div class="settings-header">
+                        <h3>设置</h3>
+                    </div>
+                    <div class="settings-body">
+                        <!-- 弹幕开关 -->
+                        <div class="settings-group">
+                            <div class="settings-group-title">通知与弹幕</div>
+                            <div class="settings-item">
+                                <div class="settings-item-left">
+                                    <div class="settings-item-label">弹幕飘动</div>
+                                    <div class="settings-item-desc">控制分析弹幕是否在顶部飘动显示</div>
+                                </div>
+                                <label class="settings-toggle">
+                                    <input type="checkbox" id="settingBarrageEnabled" checked onchange="toggleBarrageSetting(this.checked)">
+                                    <span class="settings-toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- 分析间隔 -->
+                        <div class="settings-group">
+                            <div class="settings-group-title">分析配置</div>
+                            <div class="settings-item column">
+                                <div class="settings-item-left">
+                                    <div class="settings-item-label">分析间隔 <span class="settings-help-tip" data-tip="最小 5 秒，最大 3600 秒（1小时）">?</span></div>
+                                    <div class="settings-item-desc">每隔多少秒执行一次脑电分析</div>
+                                </div>
+                                <div class="settings-slider-row">
+                                    <input type="range" id="settingAnalysisInterval" min="10" max="300" step="5" value="30" class="settings-slider" oninput="updateIntervalFromSlider(this.value)">
+                                    <div class="settings-input-group">
+                                        <input type="number" id="intervalInput" class="settings-number-input" value="30" min="5" max="3600" step="1" onchange="updateIntervalFromInput(this.value)">
+                                        <span class="settings-input-unit">秒</span>
+
+                                    </div>
+                                </div>
+                                <button class="settings-apply-btn" onclick="applyAnalysisInterval()">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                    应用
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div> <!-- 结束 right-sidebar -->
+
+            <!-- 最右侧导航条 -->
+            <div class="right-nav-strip">
+                <button class="nav-item active" onclick="switchRightPanel('panel-control', this)" title="控制台">
+                    <svg class="nav-ico" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+                    <span class="nav-lbl">控制台</span>
+                </button>
+                <button class="nav-item" onclick="switchRightPanel('panel-dashboard', this)" title="数据">
+                    <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+                    <span class="nav-lbl">数据</span>
+                </button>
+                <div class="nav-separator"></div>
+                <button class="nav-item" id="navNotifBtn" onclick="toggleNotifDropdown()" title="通知">
+                    <div class="nav-ico-wrap">
+                        <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+                        <span class="notif-badge" id="notifBadge" style="display:none;"></span>
+                    </div>
+                    <span class="nav-lbl">通知</span>
+                </button>
+                <button class="nav-item" onclick="switchRightPanel('panel-settings', this)" title="设置">
+                    <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    </svg>
+                    <span class="nav-lbl">设置</span>
+                </button>
+            </div>
+
+        </div> <!-- 结束 right-sidebar-wrapper -->
+
         </div>
     </div>
 </div>
@@ -371,5 +578,6 @@
 <script src="/js/chat.js"></script>
 <script src="/js/session.js"></script>
 <script src="/js/app.js"></script>
+<script src="/js/live-dashboard.js"></script>
 </body>
 </html>

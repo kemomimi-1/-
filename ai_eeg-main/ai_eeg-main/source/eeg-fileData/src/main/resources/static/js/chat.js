@@ -105,6 +105,35 @@
             const thinkingEl = messageDiv.querySelector('#thinking-status');
             const durationEl = messageDiv.querySelector('#stream-duration');
 
+            // 打字机引擎：后端推送的文本积累到 targetText，定时器逐字追赶
+            let targetText = '';   // 后端已推送的完整文本
+            let displayedLen = 0;  // 前端已显示到第几个字符
+            let typewriterTimer = null;
+            let streamDone = false;
+
+            function startTypewriter() {
+                if (typewriterTimer) return;
+                typewriterTimer = setInterval(() => {
+                    if (displayedLen < targetText.length) {
+                        // 每次打 1~3 个字符，长文本时略快
+                        const speed = targetText.length - displayedLen > 50 ? 3 : 1;
+                        displayedLen = Math.min(displayedLen + speed, targetText.length);
+                        const visibleText = targetText.substring(0, displayedLen);
+                        contentEl.style.display = 'block';
+                        contentEl.innerHTML = formatAIResponse(visibleText);
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                    } else if (streamDone) {
+                        // 流结束且全部打完
+                        clearInterval(typewriterTimer);
+                        typewriterTimer = null;
+                        // 最终渲染确保完整
+                        contentEl.innerHTML = formatAIResponse(targetText);
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                    }
+                    // 如果追平了但流还没结束，保持 timer 等待新字符
+                }, 20);
+            }
+
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -126,11 +155,16 @@
 
                         try {
                             const data = JSON.parse(dataStr);
-                            handleStreamEvent(currentEvent, data, contentEl, thinkingEl, durationEl);
 
                             if (currentEvent === 'chunk' && data.text) {
                                 fullContent += data.text;
+                                targetText = fullContent;
+                                startTypewriter();
+                            } else {
+                                // 非 chunk 事件立即处理
+                                handleStreamEvent(currentEvent, data, contentEl, thinkingEl, durationEl);
                             }
+
                             if (currentEvent === 'done' && data.sessionId) {
                                 if (!currentConversationSessionId) {
                                     currentConversationSessionId = data.sessionId;
@@ -142,8 +176,16 @@
                         }
                     }
                 }
+            }
 
-                // 保持滚动到底部
+            // 流结束，标记完成，等打字机追完
+            streamDone = true;
+            // 如果打字机已停但还有未显示的，立即显示
+            if (displayedLen < targetText.length) {
+                startTypewriter();
+            } else if (fullContent) {
+                contentEl.style.display = 'block';
+                contentEl.innerHTML = formatAIResponse(fullContent);
                 chatMessages.scrollTop = chatMessages.scrollHeight;
             }
 
@@ -163,7 +205,7 @@
         }
     }
 
-    // 处理SSE流事件
+    // 处理SSE流事件（非chunk事件）
     function handleStreamEvent(eventType, data, contentEl, thinkingEl, durationEl) {
         switch (eventType) {
             case 'thinking': {
@@ -179,19 +221,7 @@
                     const dur = typeof data.duration === 'number' ? data.duration.toFixed(1) : '0';
                     thinkingEl.innerHTML = `✅ 思考完成 (${dur}s)`;
                     thinkingEl.classList.add('thinking-done');
-                    // 显示内容区域
                     contentEl.style.display = 'block';
-                }
-                break;
-            }
-            case 'chunk': {
-                if (data.text) {
-                    // 逐字追加并实时格式化
-                    contentEl.style.display = 'block';
-                    // 获取当前已有的纯文本，拼接新文本后重新格式化
-                    if (!contentEl._rawText) contentEl._rawText = '';
-                    contentEl._rawText += data.text;
-                    contentEl.innerHTML = formatAIResponse(contentEl._rawText);
                 }
                 break;
             }
@@ -199,7 +229,6 @@
                 const total = typeof data.totalTime === 'number' ? data.totalTime.toFixed(1) : '?';
                 durationEl.textContent = `耗时 ${total}s`;
                 durationEl.style.display = 'inline';
-                // 隐藏思考指示器
                 thinkingEl.style.display = 'none';
                 break;
             }

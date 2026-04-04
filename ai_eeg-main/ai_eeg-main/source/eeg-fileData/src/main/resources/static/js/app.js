@@ -89,6 +89,9 @@
                 // 初始化WebSocket连接
                 initializeBarrageWebSocket();
 
+                // 更新顶部状态栏
+                if (window.updateTopbarAnalysis) window.updateTopbarAnalysis(true);
+
                 showAlert('success', '实时分析已启动');
             } else {
                 showAlert('error', data.error || '启动实时分析失败');
@@ -134,6 +137,9 @@
                     barrageWebSocket.close();
                     barrageWebSocket = null;
                 }
+
+                // 更新顶部状态栏
+                if (window.updateTopbarAnalysis) window.updateTopbarAnalysis(false);
 
                 showAlert('success', '实时分析已停止');
             } else {
@@ -333,6 +339,9 @@
                     const stopBtn = DOM_CACHE.stopBarrageBtn;
                     if (startBtn) startBtn.style.display = 'none';
                     if (stopBtn) stopBtn.style.display = 'flex';
+                    
+                    // 更新顶部状态栏
+                    if (window.updateTopbarAnalysis) window.updateTopbarAnalysis(true);
                     
                     // 立即建立 WebSocket 连接
                     if (!barrageWebSocket) {

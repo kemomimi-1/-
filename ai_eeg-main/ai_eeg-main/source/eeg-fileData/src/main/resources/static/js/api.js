@@ -23,7 +23,8 @@ const API_ROUTES = {
         STOP: '/api/realtime-analysis/stop',
         STATUS: '/api/realtime-analysis/status',
         BARRAGE: '/api/realtime-analysis/barrages', // 支持 ?limit=... 等
-        BARRAGE_BY_ID: (id) => `/api/realtime-analysis/barrages/${id}` // 动态路由
+        BARRAGE_BY_ID: (id) => `/api/realtime-analysis/barrages/${id}`, // 动态路由
+        CONFIG_INTERVAL: '/api/realtime-analysis/config/interval' // 修改分析间隔
     },
     // 会话流管理
     SESSIONS: {

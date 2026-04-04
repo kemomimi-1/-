@@ -16,10 +16,18 @@
             barrageWebSocket.onmessage = function(event) {
                 try {
                     const data = JSON.parse(event.data);
+                    // 【顶部状态栏】累加数据包计数
+                    window._topbarPacketTotal = (window._topbarPacketTotal || 0) + 1;
                     if (data.type === 'REAL_TIME_BARRAGE' && data.data.type === 'NEW_BARRAGE') {
                         handleNewBarrage(data.data.barrage);
                     } else if (data.type === 'BARRAGE_DELETION' && data.data.type === 'BARRAGE_DELETED') {
                         handleBarrageDeleted(data.data.barrageId);
+                    }
+                    
+                    // 【大屏强化】将数据抛给 live-dashboard.js 去渲染图表
+                    if (window.updateDashboardData && data.type) {
+                        console.debug('[WS→Dashboard]', data.type, Array.isArray(data.data) ? `[${data.data.length} items]` : typeof data.data);
+                        window.updateDashboardData(data.type, data.data);
                     }
                 } catch (error) {
                     console.error('解析WebSocket消息失败:', error);
@@ -63,6 +71,15 @@
             barrageHistory.unshift(barrage);
             if (barrageHistory.length > 50) barrageHistory.pop();
             if (isSidebarExpanded) updateBarrageHistoryDisplay();
+
+            // 【通知徽标】如果用户不在通知面板，显示红点提醒
+            const notifPanel = document.getElementById('panel-notifs');
+            const isNotifVisible = notifPanel && notifPanel.style.display !== 'none';
+            if (!isNotifVisible && typeof showNotifBadge === 'function') {
+                showNotifBadge();
+            }
+            // 同步更新通知面板内的列表
+            updateBarrageHistoryDisplay();
         }
 
         // 2. 弹幕飘动显示 (无论侧边栏是否有，只要新到就必须飘)
@@ -86,6 +103,12 @@
     }
 
     function createFloatingBarrage(barrage) {
+        // 【设置面板】如果用户关闭了弹幕飘动，跳过动画但保留通知记录
+        if (window._barrageEnabled === false) {
+            window.isBarrageShowing = false;
+            return;
+        }
+
         const container = DOM_CACHE.barrageFloatArea; // 【修复】使用 HTML 中真实的 ID
         if (!container) {
             console.error('❌ 未找到弹幕容器: barrageFloatArea');
@@ -99,9 +122,12 @@
         const stateColor = getStateColor(barrage.primaryState);
         const stateDesc = getStateDescription(barrage.primaryState);
         
-        // 【视觉净化】剥离所有末尾的时间字符串 (支持多重括号清理)
+        // 【视觉净化】剥离所有末尾的时间字符串 和 开头重复的状态标签
         const rawContent = barrage.content || '未检测到有效分析';
-        const pureContent = rawContent.replace(/\s*\[\d{2}:\d{2}:\d{2}.*?\]/g, '').trim();
+        const pureContent = rawContent
+            .replace(/\s*\[\d{2}:\d{2}:\d{2}.*?\]/g, '')  // 去掉末尾时间
+            .replace(/^【[^】]*】\s*/g, '')                   // 去掉开头状态标签
+            .trim();
 
         const barrageEl = document.createElement('div');
         barrageEl.className = 'floating-barrage';
@@ -202,33 +228,12 @@
         }
     }
 
-// 切换弹幕侧边栏
+// 切换弹幕侧边栏 → 现在弹出通知下拉浮层
     function toggleBarrageSidebar() {
-        const sidebar = DOM_CACHE.barrageSidebar;
-        const expandBtn = DOM_CACHE.barrageExpandBtn;
-
-        isSidebarExpanded = !isSidebarExpanded;
-
-        if (isSidebarExpanded) {
-            sidebar.classList.add('expanded');
-            expandBtn.innerHTML = `
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="18,15 12,9 6,15"></polyline>
-                </svg>
-                收起弹幕
-            `;
-
-            // 加载并显示历史弹幕
-            loadBarrageHistory();
-        } else {
-            sidebar.classList.remove('expanded');
-            expandBtn.innerHTML = `
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="6,9 12,15 18,9"></polyline>
-                </svg>
-                历史弹幕
-            `;
+        if(typeof toggleNotifDropdown === 'function') {
+            toggleNotifDropdown();
         }
+        isSidebarExpanded = true;
     }
 
 // 加载弹幕历史
@@ -289,70 +294,140 @@
         }
     }
 
-// 更新弹幕历史显示
+// 更新弹幕历史显示 — 卡片轮播模式
+    window._notifCurrentIdx = 0;
+
     function updateBarrageHistoryDisplay() {
-        const barrageList = DOM_CACHE.barrageList;
+        const barrageList = document.getElementById('barrageList');
+        if (!barrageList) return;
 
         if (!barrageHistory || barrageHistory.length === 0) {
+            window._notifCurrentIdx = 0;
             barrageList.innerHTML = `
                 <div class="barrage-empty">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
                     </svg>
-                    暂无弹幕记录<br>
-                    <small>点击开始按钮启动实时分析</small>
+                    暂无通知<br>
+                    <small>启动实时分析后，分析结果将显示在这里</small>
                 </div>
             `;
             return;
         }
 
-        let html = '';
-        barrageHistory.forEach(barrage => {
-            // 后端 JVM 已设为 Asia/Shanghai，createdAt 直接就是北京时间，无需再转换
+        // Clamp index
+        if (window._notifCurrentIdx >= barrageHistory.length) window._notifCurrentIdx = barrageHistory.length - 1;
+        if (window._notifCurrentIdx < 0) window._notifCurrentIdx = 0;
+
+        // Build carousel
+        let cardsHtml = '';
+        barrageHistory.forEach((barrage, idx) => {
             let timeSource = barrage.createdAt;
-            if (typeof timeSource === 'string') {
-                timeSource = timeSource.replace(' ', 'T');
-            }
+            if (typeof timeSource === 'string') timeSource = timeSource.replace(' ', 'T');
             
             const createdTime = new Date(timeSource).toLocaleString('zh-CN', {
-                year: 'numeric',
-                month: 'numeric',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-                hour12: false
+                year: 'numeric', month: 'numeric', day: 'numeric',
+                hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
             });
             
             const stateDesc = getStateDescription(barrage.primaryState);
             const confidence = barrage.confidenceScore ? (barrage.confidenceScore * 100).toFixed(1) + '%' : 'N/A';
-            
-            // 【文案清理】历史记录里也不展示冗余的时间戳后缀 (支持全局清理)
             const rawContent = barrage.content || barrage.recommendation || '无分析内容';
-            const mainContent = rawContent.replace(/\s*\[\d{2}:\d{2}:\d{2}.*?\]/g, '').trim();
+            const mainContent = rawContent
+                .replace(/\s*\[\d{2}:\d{2}:\d{2}.*?\]/g, '')  // 去掉末尾时间
+                .replace(/^【[^】]*】\s*/g, '')                   // 去掉开头状态标签
+                .trim();
+            const activeClass = idx === window._notifCurrentIdx ? 'active' : '';
 
-            html += `
-                <div class="barrage-item" data-state="${barrage.primaryState}" data-id="${barrage.id}">
-                    <button class="barrage-delete-btn" onclick="deleteBarrageItem(${barrage.id})">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <polyline points="3,6 5,6 21,6"></polyline>
-                            <path d="M19,6 L19,20 C19,21 18,22 17,22 L7,22 C6,22 5,21 5,20 L5,6"></path>
-                            <path d="M8,6 L8,4 C8,3 9,2 10,2 L14,2 C15,2 16,3 16,4 L16,6"></path>
-                        </svg>
-                    </button>
-                    <div class="barrage-content">
-                        【${stateDesc}】 ${mainContent}
+            cardsHtml += `
+                <div class="notif-card ${activeClass}" data-idx="${idx}">
+                    <div class="notif-card-body">
+                        <div class="notif-card-text">【${stateDesc}】 ${mainContent}</div>
                     </div>
-                    <div class="barrage-meta">
-                        <span class="barrage-time">${createdTime}</span>
-                        <span class="barrage-confidence">置信度: ${confidence}</span>
+                    <div class="notif-card-footer">
+                        <span class="notif-card-time">${createdTime}</span>
+                        <span class="notif-card-conf">置信度: ${confidence}</span>
+                        <button class="notif-card-del" onclick="event.stopPropagation(); deleteBarrageItem(${barrage.id})" title="删除">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="3,6 5,6 21,6"></polyline>
+                                <path d="M19,6v14a2,2,0,0,1-2,2H7a2,2,0,0,1-2-2V6"></path>
+                                <path d="M8,6V4a2,2,0,0,1,2-2h4a2,2,0,0,1,2,2V6"></path>
+                            </svg>
+                        </button>
                     </div>
                 </div>
             `;
         });
 
-        barrageList.innerHTML = html;
+        // Dots indicator
+        let dotsHtml = '';
+        if (barrageHistory.length > 1 && barrageHistory.length <= 8) {
+            dotsHtml = '<div class="notif-dots">';
+            barrageHistory.forEach((_, idx) => {
+                dotsHtml += `<span class="notif-dot ${idx === window._notifCurrentIdx ? 'active' : ''}" onclick="goToNotif(${idx})"></span>`;
+            });
+            dotsHtml += '</div>';
+        }
+
+        // Counter
+        const counterHtml = `<div class="notif-counter">${window._notifCurrentIdx + 1} / ${barrageHistory.length}</div>`;
+
+        barrageList.innerHTML = `
+            <div class="notif-carousel" id="notifCarousel">
+                ${cardsHtml}
+            </div>
+            ${counterHtml}
+            ${dotsHtml}
+        `;
+
+        // Attach wheel listener with global throttle
+        const carousel = document.getElementById('notifCarousel');
+        if (carousel) {
+            carousel.onwheel = function(e) {
+                e.preventDefault();
+                if (window._notifWheelLock) return;
+                // Ignore tiny delta from trackpad inertia
+                if (Math.abs(e.deltaY) < 15) return;
+                window._notifWheelLock = true;
+                if (e.deltaY > 0) goToNotif(window._notifCurrentIdx + 1);
+                else goToNotif(window._notifCurrentIdx - 1);
+                setTimeout(() => { window._notifWheelLock = false; }, 500);
+            };
+        }
     }
+
+    // Navigate to a specific card
+    window.goToNotif = function(idx) {
+        if (!barrageHistory || barrageHistory.length === 0) return;
+        if (idx < 0 || idx >= barrageHistory.length) return;
+
+        const oldIdx = window._notifCurrentIdx;
+        window._notifCurrentIdx = idx;
+        const cards = document.querySelectorAll('.notif-card');
+        const dots = document.querySelectorAll('.notif-dot');
+        const counter = document.querySelector('.notif-counter');
+
+        if (!cards.length) return;
+
+        const direction = idx > oldIdx ? 'down' : 'up';
+
+        cards.forEach((card, i) => {
+            card.classList.remove('active', 'exit-up', 'exit-down', 'enter-up', 'enter-down');
+            if (i === oldIdx) {
+                card.classList.add(direction === 'down' ? 'exit-up' : 'exit-down');
+            }
+            if (i === idx) {
+                card.classList.add('active', direction === 'down' ? 'enter-up' : 'enter-down');
+            }
+        });
+
+        dots.forEach((dot, i) => {
+            dot.classList.toggle('active', i === idx);
+        });
+
+        if (counter) counter.textContent = `${idx + 1} / ${barrageHistory.length}`;
+    };
 
 // 删除弹幕项
     async function deleteBarrageItem(barrageId) {

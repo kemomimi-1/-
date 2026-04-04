@@ -190,6 +190,40 @@ public class RealTimeAnalysisController {
     }
 
     /**
+     * 修改分析间隔
+     * POST /api/realtime-analysis/config/interval?seconds=30
+     */
+    @PostMapping("/config/interval")
+    public ResponseEntity<Object> setAnalysisInterval(
+            @RequestParam int seconds,
+            HttpSession session) {
+        Long userId = (Long) session.getAttribute("userId");
+        if (userId == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(createErrorResponse("用户未登录"));
+        }
+
+        if (seconds < 5 || seconds > 3600) {
+            return ResponseEntity.badRequest().body(createErrorResponse("分析间隔必须在 5~3600 秒之间"));
+        }
+
+        try {
+            analysisService.setAnalysisIntervalSeconds(seconds);
+
+            Map<String, Object> response = createSuccessResponse("分析间隔已更新");
+            response.put("intervalSeconds", seconds);
+            response.put("userId", userId);
+
+            log.info("用户 {} 将分析间隔设置为 {} 秒", userId, seconds);
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            log.error("修改分析间隔失败", e);
+            return ResponseEntity.internalServerError()
+                    .body(createErrorResponse("修改分析间隔失败: " + e.getMessage()));
+        }
+    }
+
+    /**
      * 创建成功响应
      */
     private Map<String, Object> createSuccessResponse(String message) {

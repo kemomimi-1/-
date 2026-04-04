@@ -110,7 +110,7 @@ eeg:
 ai:
   tongyi:
     # 基础API配置
-    api-key: sk-1f46b1e2693846c4a85db50d5e41460c
+    api-key: sk-8006f3c490694610ad25c5dd9ca4aa71
     base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
     model: qwen-max
 
