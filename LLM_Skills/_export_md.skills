@@ -1,0 +1,183 @@
+"""导出 kaggle_eeg 全表数据，生成可视化 Markdown 文件"""
+import sys; sys.stdout.reconfigure(encoding='utf-8')
+from influxdb_client_3 import InfluxDBClient3
+import pandas as pd
+import numpy as np
+
+client = InfluxDBClient3(host='http://localhost:8181', database='eeg_db', token='apiv3_token', org='')
+
+# 拉取全表数据
+print("正在拉取 kaggle_eeg 全部数据...")
+df = client.query("SELECT * FROM kaggle_eeg ORDER BY subject_id, time").to_pandas()
+print(f"拉取完成: {len(df)} 行")
+
+bands = ['delta','theta','alpha1','alpha2','beta1','beta2','gamma1','gamma2']
+extra = ['attention','mediation','raw']
+all_num = bands + extra
+
+# ============ 生成 Markdown ============
+md = []
+md.append("# 📊 kaggle_eeg 数据可视化报告\n")
+md.append(f"> 自动生成于 InfluxDB `eeg_db.kaggle_eeg` 表")
+md.append(f"> 总行数: **{len(df):,}** | 被试: **{df['subject_id'].nunique()}** 人 | 视频: **{df['video_id'].nunique()}** 个\n")
+
+# --- Section 1: Schema ---
+md.append("## 1. 数据字典（列定义）\n")
+md.append("| 列名 | 数据类型 | 角色 | 含义 |")
+md.append("|:---|:---|:---|:---|")
+schema_info = [
+    ("subject_id", "TAG", "索引", "被试编号 (S0~S9)，共 10 名受试者"),
+    ("video_id", "TAG", "索引", "教学视频编号 (V0~V9)，难度各异"),
+    ("time", "Timestamp", "时间", "采样时间戳，每秒 1 帧 (1 Hz)"),
+    ("confused", "TAG", "标签", "困惑标签：`yes`=困惑, `no`=不困惑（研究者预定义的标准答案）"),
+    ("self_confused", "TAG", "标签", "受试者自评困惑标签，实验后主观回顾标注"),
+    ("delta", "Float64", "频段", "**Delta 波 (0.5-4 Hz)**：深度睡眠/疲劳/走神的标志"),
+    ("theta", "Float64", "频段", "**Theta 波 (4-8 Hz)**：困倦、白日梦、信息处理受阻时升高"),
+    ("alpha1", "Float64", "频段", "**Low Alpha (8-10 Hz)**：放松但清醒，闭眼时增强，注意力集中时被抑制"),
+    ("alpha2", "Float64", "频段", "**High Alpha (10-12 Hz)**：内在注意力、工作记忆加工"),
+    ("beta1", "Float64", "频段", "**Low Beta (12-20 Hz)**：主动思考、集中注意力，做逻辑推理时升高"),
+    ("beta2", "Float64", "频段", "**High Beta (20-30 Hz)**：紧张、焦虑、高度警觉时显著升高"),
+    ("gamma1", "Float64", "频段", "**Low Gamma (30-50 Hz)**：高级认知功能，跨脑区信息整合"),
+    ("gamma2", "Float64", "频段", "**High Gamma (50-100 Hz)**：感知绑定和意识加工，可能混入肌电伪迹"),
+    ("alpha_total", "Float64", "合计", "Alpha 总能量 = alpha1 + alpha2"),
+    ("beta_total", "Float64", "合计", "Beta 总能量 = beta1 + beta2"),
+    ("gamma_total", "Float64", "合计", "Gamma 总能量 = gamma1 + gamma2"),
+    ("attention", "Float64", "eSense", "注意力指数 (0-100)，NeuroSky 芯片内置算法计算"),
+    ("mediation", "Float64", "eSense", "冥想/放松指数 (0-100)，高值=放松，低值=紧张"),
+    ("raw", "Float64", "原始信号", "原始 EEG 电压 (-2048~2047)，所有频段的源头信号"),
+]
+for name, dtype, role, desc in schema_info:
+    md.append(f"| `{name}` | {dtype} | {role} | {desc} |")
+
+# --- Section 2: Overview Stats ---
+md.append("\n## 2. 全局统计摘要\n")
+md.append("### 2.1 频段能量分布\n")
+md.append("| 频段 | 平均值 | 标准差 | 最小值 | 中位数 | 最大值 |")
+md.append("|:---|---:|---:|---:|---:|---:|")
+for b in all_num:
+    col = df[b].dropna()
+    md.append(f"| `{b}` | {col.mean():,.0f} | {col.std():,.0f} | {col.min():,.0f} | {col.median():,.0f} | {col.max():,.0f} |")
+
+# --- Section 3: Label Distribution ---
+md.append("\n### 2.2 标签分布\n")
+confused_counts = df['confused'].value_counts()
+total = len(df)
+md.append("| 标签 | 含义 | 行数 | 占比 |")
+md.append("|:---|:---|---:|---:|")
+for lab in ['no', 'yes']:
+    n = confused_counts.get(lab, 0)
+    pct = n / total * 100
+    meaning = "不困惑 (Focused)" if lab == 'no' else "困惑 (Confused)"
+    bar = "█" * int(pct / 2)
+    md.append(f"| `{lab}` | {meaning} | {n:,} | {pct:.1f}% {bar} |")
+
+# --- Section 4: Per-Subject ---
+md.append("\n## 3. 各被试数据分布\n")
+md.append("### 3.1 被试样本量与困惑比例\n")
+md.append("| 被试 | 总帧数 | 困惑帧 | 不困惑帧 | 困惑率 | 分布柱状图 |")
+md.append("|:---|---:|---:|---:|---:|:---|")
+for sid in sorted(df['subject_id'].unique()):
+    sub_df = df[df['subject_id'] == sid]
+    n_total = len(sub_df)
+    n_yes = len(sub_df[sub_df['confused'] == 'yes'])
+    n_no = n_total - n_yes
+    pct = n_yes / n_total * 100 if n_total > 0 else 0
+    bar_yes = "🟥" * int(pct / 5)
+    bar_no = "🟩" * int((100 - pct) / 5)
+    md.append(f"| {sid} | {n_total:,} | {n_yes:,} | {n_no:,} | {pct:.1f}% | {bar_no}{bar_yes} |")
+
+# --- Section 5: Per-Subject Band Means ---
+md.append("\n### 3.2 各被试频段平均能量\n")
+md.append("| 被试 | Delta | Theta | Alpha1 | Alpha2 | Beta1 | Beta2 | Gamma1 | Gamma2 | Attention | Mediation |")
+md.append("|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+for sid in sorted(df['subject_id'].unique()):
+    sub_df = df[df['subject_id'] == sid]
+    vals = [f"{sub_df[b].mean():,.0f}" for b in bands]
+    vals += [f"{sub_df['attention'].mean():.0f}", f"{sub_df['mediation'].mean():.0f}"]
+    md.append(f"| {sid} | " + " | ".join(vals) + " |")
+
+# --- Section 6: Confused vs Not Confused comparison ---
+md.append("\n## 4. 困惑 vs 不困惑 频段能量对比\n")
+md.append("> 这是系统判定困惑的核心依据：对比两种状态下各频段的能量差异\n")
+md.append("| 频段 | 不困惑 (平均) | 困惑 (平均) | 变化率 | 方向 | 临床意义 |")
+md.append("|:---|---:|---:|---:|:---|:---|")
+
+df_no = df[df['confused'] == 'no']
+df_yes = df[df['confused'] == 'yes']
+
+meanings = {
+    'delta': '疲劳/走神增加',
+    'theta': '信息处理受阻',
+    'alpha1': '放松状态减少',
+    'alpha2': '工作记忆负荷变化',
+    'beta1': '主动思考努力变化',
+    'beta2': '焦虑/紧张变化',
+    'gamma1': '认知整合能力变化',
+    'gamma2': '高频认知活动变化',
+    'attention': '注意力集中程度',
+    'mediation': '身心放松程度',
+}
+
+for b in bands + ['attention', 'mediation']:
+    avg_no = df_no[b].mean()
+    avg_yes = df_yes[b].mean()
+    change = (avg_yes - avg_no) / avg_no * 100 if avg_no != 0 else 0
+    direction = "📈 升高" if change > 2 else "📉 降低" if change < -2 else "➡️ 持平"
+    md.append(f"| `{b}` | {avg_no:,.0f} | {avg_yes:,.0f} | {change:+.1f}% | {direction} | {meanings.get(b, '')} |")
+
+# --- Section 8: Sample data per subject ---
+md.append("## 5. 各被试样本数据（每人前 5 行）\n")
+show_cols = ['subject_id','video_id','time','delta','theta','alpha1','alpha2','beta1','beta2','gamma1','gamma2','attention','mediation','confused']
+for sid in sorted(df['subject_id'].unique()):
+    sub_df = df[df['subject_id'] == sid].head(5)
+    md.append(f"### 被试 {sid}\n")
+    header = "| " + " | ".join(show_cols) + " |"
+    sep = "|" + "|".join(["---:" if c not in ('subject_id','video_id','confused','time') else ":---" for c in show_cols]) + "|"
+    md.append(header)
+    md.append(sep)
+    for _, r in sub_df.iterrows():
+        vals = []
+        for c in show_cols:
+            v = r[c]
+            if c == 'time':
+                vals.append(str(v)[:19])
+            elif isinstance(v, float) and c not in ('attention','mediation'):
+                vals.append(f"{v:,.0f}")
+            else:
+                vals.append(str(v))
+        md.append("| " + " | ".join(vals) + " |")
+    md.append("")
+
+# --- Section 9: Cognitive signature explanation ---
+md.append("## 6. 困惑检测核心机理\n")
+md.append("""当学生处于**困惑状态**时，脑电波会呈现以下特征模式：
+
+```
+困惑时的脑电信号模式:
+┌──────────────────────────────────────────────────┐
+│  Theta ↑ (信息处理受阻，工作记忆超载)              │
+│  Alpha ↓ (无法进入轻松理解的状态)                  │
+│  Beta  ↑ (大脑拼命努力思考但未成功)                │
+│  Attention ↓ (注意力分散/涣散)                     │
+│                                                    │
+│  → Theta/Beta 比值 ↑ (核心困惑指标)                │
+│  → Theta/Alpha 比值 ↑ (认知负荷指标)               │
+│  → Engagement 指数 ↓ (参与度下降)                  │
+└──────────────────────────────────────────────────┘
+```
+
+我们的 V9 引擎通过 **112 维特征工程**捕捉这些模式：
+- 原始 10 频段 → 6 种认知比值 = **16 维基础特征**
+- × 7 种时序变换（原始值 + 一阶差分 + 二阶差分 + 短窗均值 + 长窗均值 + 短窗方差 + 长窗方差）
+- = **112 维高阶时序特征空间**
+
+然后交由 XGBoost (300 棵树, GPU CUDA 加速) 进行 Subject-Dependent 5-Fold 交叉验证分类。
+""")
+
+# Write file
+output_path = r"C:\Users\ROG\Desktop\项目\MyDOC\kaggle_eeg_数据可视化报告.md"
+with open(output_path, 'w', encoding='utf-8') as f:
+    f.write("\n".join(md))
+
+print(f"\n✅ 报告已生成: {output_path}")
+print(f"   共 {len(md)} 行 Markdown")

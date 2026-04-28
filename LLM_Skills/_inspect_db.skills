@@ -1,0 +1,66 @@
+import sys; sys.stdout.reconfigure(encoding='utf-8')
+from influxdb_client_3 import InfluxDBClient3
+import pandas as pd
+pd.set_option('display.width', 180)
+pd.set_option('display.max_columns', 20)
+
+client = InfluxDBClient3(host='http://localhost:8181', database='eeg_db', token='apiv3_token', org='')
+
+print("=" * 80)
+print("  kaggle_eeg 表数据结构详细报告（清理后）")
+print("=" * 80)
+
+# 1. Schema
+schema = client.query("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'kaggle_eeg' ORDER BY column_name").to_pandas()
+print(f"\n[1] 列结构（共 {len(schema)} 列）")
+print("-" * 80)
+for _, r in schema.iterrows():
+    print(f"  {r['column_name']:20s}  {r['data_type']}")
+
+# 2. Row count
+cnt = int(client.query("SELECT COUNT(*) as cnt FROM kaggle_eeg").to_pandas().iloc[0]['cnt'])
+print(f"\n[2] 总行数: {cnt:,}")
+
+# 3. Subjects
+subs = client.query("SELECT DISTINCT subject_id FROM kaggle_eeg").to_pandas()
+print(f"\n[3] 被试: {len(subs)} 人 -> {sorted(subs.iloc[:,0].tolist())}")
+
+# 4. Videos
+vids = client.query("SELECT DISTINCT video_id FROM kaggle_eeg").to_pandas()
+print(f"\n[4] 视频: {len(vids)} 个 -> {sorted(vids.iloc[:,0].tolist())}")
+
+# 5. Label
+print(f"\n[5] 标签分布 (confused):")
+for lab in ['yes', 'no']:
+    try:
+        n = int(client.query(f"SELECT COUNT(*) as n FROM kaggle_eeg WHERE confused = '{lab}'").to_pandas().iloc[0]['n'])
+        print(f"  confused = '{lab}': {n:,} 行")
+    except:
+        print(f"  confused = '{lab}': 查询失败")
+
+# 6. Sample
+print(f"\n[6] 前 5 行样本数据:")
+sample = client.query("SELECT * FROM kaggle_eeg ORDER BY time LIMIT 5").to_pandas()
+cols = ['subject_id','video_id','time','delta','theta','alpha1','alpha2','beta1','beta2','gamma1','gamma2','attention','mediation','raw','confused','self_confused']
+show = [c for c in cols if c in sample.columns]
+print(sample[show].to_string(index=False))
+
+# 7. Stats
+print(f"\n[7] 频段能量统计:")
+bands = ['delta','theta','alpha1','alpha2','beta1','beta2','gamma1','gamma2','attention','mediation','raw']
+parts = []
+for b in bands:
+    parts.append(f"CAST(AVG({b}) AS DOUBLE) as {b}_avg")
+    parts.append(f"CAST(MIN({b}) AS DOUBLE) as {b}_min")
+    parts.append(f"CAST(MAX({b}) AS DOUBLE) as {b}_max")
+    parts.append(f"CAST(STDDEV({b}) AS DOUBLE) as {b}_std")
+stats = client.query("SELECT " + ", ".join(parts) + " FROM kaggle_eeg").to_pandas()
+
+print(f"  {'列名':<12s}  {'平均值':>14s}  {'标准差':>14s}  {'最小值':>14s}  {'最大值':>14s}")
+print(f"  {'-'*12}  {'-'*14}  {'-'*14}  {'-'*14}  {'-'*14}")
+for b in bands:
+    avg = stats[f'{b}_avg'].iloc[0]
+    std = stats[f'{b}_std'].iloc[0]
+    mn = stats[f'{b}_min'].iloc[0]
+    mx = stats[f'{b}_max'].iloc[0]
+    print(f"  {b:<12s}  {avg:>14,.1f}  {std:>14,.1f}  {mn:>14,.1f}  {mx:>14,.1f}")

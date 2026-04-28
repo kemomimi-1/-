@@ -24,7 +24,7 @@ echo.
 :: Use relative path to avoid encoding issues
 set "PRJ_ROOT=%~dp0"
 set "INF_DIR=%PRJ_ROOT%InfluxDB Core 3.2.1\InfluxDB Core 3.2.1\influxdb-3.2.1"
-set "BAK_DIR=%PRJ_ROOT%ai_eeg-main\ai_eeg-main\source\eeg-fileData"
+set "BAK_DIR=%PRJ_ROOT%ai_eeg-main\ai_eeg-main\ai_eeg-main\source\eeg-fileData"
 
 echo [Step 1] Initializing InfluxDB...
 if exist "%INF_DIR%" (

@@ -1,0 +1,1 @@
+influxdb3.exe show databases --host http://127.0.0.1:8181 --token apiv3_6hQgoPWltvJPW3a-Pyf116CfbUlMVylHofRF7IcXom5YMXDF4mNUmrq39ccq5SmLncH1k1Z1RgUdGHfgg3caag

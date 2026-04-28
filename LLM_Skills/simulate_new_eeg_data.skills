@@ -1,0 +1,85 @@
+"""
+模拟新用户脑电数据生成器 (EEG Data Simulator)
+==============================================
+用途：生成一个虚拟的“新用户”数据并导入 InfluxDB，
+用于测试高精度诊断引擎的数据自适应能力。
+"""
+import numpy as np
+import pandas as pd
+from influxdb_client_3 import InfluxDBClient3, Point
+import time
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+
+def log(msg):
+    print(msg, flush=True)
+
+log("=" * 70)
+log("  正在模拟新用户脑电波数据 (Subject: S99)")
+log("=" * 70)
+
+# 1. 连接 InfluxDB
+client = InfluxDBClient3(host="http://localhost:8181", database="eeg_db", token="apiv3_token", org="")
+
+# 2. 生成模拟数据参数
+subject_id = "S99"  # 虚拟的新用户 ID
+video_ids = ["V1", "V2"]  # 看两个视频，一个是放松的，一个是困惑的
+sample_count = 500  # 每个视频生成 500 条数据 (约 4 分钟)
+
+points = []
+base_time = datetime.utcnow()
+
+log(f"  [1/2] 正在生成 {subject_id} 的虚拟脑电波...")
+
+for vid in video_ids:
+    is_confused = 'yes' if vid == "V2" else 'no'
+    
+    for i in range(sample_count):
+        # 模拟真实的脑电频段波动 (加入随机噪声和基线偏移)
+        # 困惑时 Theta 和 Beta 稍微高一点，Alpha 稍微低一点
+        base_multiplier = 1.2 if is_confused == 'yes' else 0.8
+        
+        delta = np.abs(np.random.normal(500000, 100000))
+        theta = np.abs(np.random.normal(150000 * base_multiplier, 30000))
+        alpha1 = np.abs(np.random.normal(30000 / base_multiplier, 10000))
+        alpha2 = np.abs(np.random.normal(20000 / base_multiplier, 8000))
+        beta1 = np.abs(np.random.normal(20000 * base_multiplier, 5000))
+        beta2 = np.abs(np.random.normal(15000 * base_multiplier, 4000))
+        gamma1 = np.abs(np.random.normal(5000, 2000))
+        gamma2 = np.abs(np.random.normal(3000, 1000))
+        attention = float(np.random.randint(20, 100))
+        mediation = float(np.random.randint(20, 100))
+
+        point_time = base_time + timedelta(milliseconds=i * 500) # 每 0.5 秒一条
+        
+        # 组装 InfluxDB Point
+        p = Point("kaggle_eeg") \
+            .tag("subject_id", subject_id) \
+            .tag("video_id", vid) \
+            .tag("confused", is_confused) \
+            .field("delta", float(delta)) \
+            .field("theta", float(theta)) \
+            .field("alpha1", float(alpha1)) \
+            .field("alpha2", float(alpha2)) \
+            .field("beta1", float(beta1)) \
+            .field("beta2", float(beta2)) \
+            .field("gamma1", float(gamma1)) \
+            .field("gamma2", float(gamma2)) \
+            .field("attention", float(attention)) \
+            .field("mediation", float(mediation)) \
+            .time(point_time)
+            
+        points.append(p)
+    
+    base_time = base_time + timedelta(minutes=5) # 换视频间隔 5 分钟
+
+# 3. 批量写入数据库
+log(f"  [2/2] 正在将 {len(points)} 条数据写入 InfluxDB (eeg_db)...")
+client.write(record=points)
+
+log("\n" + "=" * 70)
+log(f"  ✅ 模拟数据写入完成！")
+log(f"  新增样本数: {len(points)}")
+log(f"  你可以再次运行 eeg_high_accuracy_analyzer.py 观察总数据量的变化了。")
+log("=" * 70)

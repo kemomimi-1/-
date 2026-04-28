@@ -1,0 +1,269 @@
+"""
+EEG 高精度自适应诊断引擎 V9 — 全库自动扫描版
+==============================================
+自动扫描 InfluxDB (eeg_db) 中所有表，检测哪些包含可分析的 EEG 数据，
+动态构建特征空间，使用 XGBoost 个体专属模型 Subject-Dependent 5-Fold 交叉验证。
+
+使用方法:
+  python eeg_high_accuracy_analyzer.py                       # 自动扫描所有表
+  python eeg_high_accuracy_analyzer.py --table external_eeg  # 仅分析指定表
+"""
+import sys, numpy as np, pandas as pd, xgboost as xgb, warnings
+from influxdb_client_3 import InfluxDBClient3
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score
+warnings.filterwarnings('ignore')
+
+AUTO_ANALYZE_ROW_LIMIT = 50000
+INFLUX_HOST, INFLUX_DB, INFLUX_TOKEN = "http://localhost:8181", "eeg_db", "apiv3_token"
+EEG_KEYWORDS = {'delta','theta','alpha','alpha1','alpha2','beta','beta1','beta2',
+                'gamma','gamma1','gamma2','attention','mediation','meditation'}
+
+def log(msg): print(msg, flush=True)
+
+def detect_col(cols, candidates, default=None):
+    cl = list(cols.columns) if hasattr(cols, 'columns') else list(cols)
+    for c in candidates:
+        if c in cl: return c
+    return default
+
+def discover_tables(client):
+    log("  [扫描] 正在检索 InfluxDB 中所有可用数据表...")
+    try:
+        tdf = client.query("SHOW TABLES").to_pandas()
+        nc = detect_col(tdf, ['table_name','name','Table','table'])
+        if not nc: return []
+        tables = tdf[nc].tolist()
+    except Exception as e:
+        log(f"  ⚠ SHOW TABLES 失败: {e}"); return []
+    log(f"  [扫描] 发现 {len(tables)} 张表: {tables}")
+    result = []
+    for t in tables:
+        try:
+            cdf = client.query(f'SELECT COUNT(*) FROM "{t}"').to_pandas()
+            rows = int(cdf.iloc[0,0]) if len(cdf)>0 else 0
+            sdf = client.query(f'SELECT * FROM "{t}" LIMIT 1').to_pandas()
+            hits = len(EEG_KEYWORDS & {c.lower() for c in sdf.columns})
+            if hits >= 2 and rows > 0:
+                result.append((t, rows, hits))
+                log(f"    ✓ {t:20s} | {rows:>8,} 行 | {hits} 个EEG频段列")
+            else:
+                log(f"    ✗ {t:20s} | {rows:>8,} 行 | {hits} 个频段列 (跳过)")
+        except: continue
+    return result
+
+def select_tables(analyzable):
+    total = sum(r for _,r,_ in analyzable)
+    if total <= AUTO_ANALYZE_ROW_LIMIT:
+        log(f"\n  [决策] 总数据量 {total:,} 行 ≤ 上限 {AUTO_ANALYZE_ROW_LIMIT:,} → 自动分析所有表")
+        return [t[0] for t in analyzable]
+    log(f"\n  [决策] 总数据量 {total:,} 行 > 上限 {AUTO_ANALYZE_ROW_LIMIT:,} → 请选择分析目标")
+    log("  " + "-"*50)
+    for i,(t,r,h) in enumerate(analyzable):
+        log(f"    [{i+1}] {t} ({r:,} 行, {h} 个频段)")
+    log(f"    [0] 全部分析 (共 {total:,} 行，可能较慢)")
+    log("  " + "-"*50)
+    try: choice = input("  请输入编号 (多个用逗号分隔，如 1,2): ").strip()
+    except EOFError: choice = '0'
+    if choice in ('0',''): return [t[0] for t in analyzable]
+    sel = []
+    for p in choice.split(','):
+        p = p.strip()
+        try:
+            idx = int(p)-1
+            if 0 <= idx < len(analyzable): sel.append(analyzable[idx][0])
+        except:
+            if p in [t[0] for t in analyzable]: sel.append(p)
+    return sel if sel else [analyzable[0][0]]
+
+def parse_id(val, prefix):
+    s = str(val).strip()
+    if s.upper().startswith(prefix.upper()):
+        try: return int(float(s[len(prefix):]))
+        except: return -1
+    try: return int(float(s))
+    except: return -1
+
+def parse_label(val):
+    s = str(val).strip().lower()
+    if s in ('yes','1','1.0','true','confused','high','positive'): return 1
+    if s in ('no','0','0.0','false','not confused','low','negative','focused'): return 0
+    try: return 1 if float(s)>0.5 else 0
+    except: return 0
+
+def analyze_table(client, table_name):
+    """对单张表执行完整的特征工程 + XGBoost 5-Fold 验证，返回报告字典"""
+    log(f"  [1/4] 数据加载: 从 '{table_name}' 获取数据...")
+    try: df = client.query(f'SELECT * FROM "{table_name}" ORDER BY subject_id, video_id, time').to_pandas()
+    except: df = client.query(f'SELECT * FROM "{table_name}"').to_pandas()
+    log(f"  >>> 原始拉取: {len(df)} 行, 列名: {list(df.columns)}")
+
+    # ---- 列检测 ----
+    log("  [2/4] 自适应列检测...")
+    sub_col = detect_col(df, ['subject_id','SubjectID','subject','sub','participant','user_id'])
+    vid_col = detect_col(df, ['video_id','VideoID','video','vid','trial','session'])
+    label_col = detect_col(df, ['confused','label','Label','class','target','state','cognitive_state'])
+    if not sub_col: df['subject_id']='S0'; sub_col='subject_id'
+    if not vid_col: df['video_id']='V0'; vid_col='video_id'
+    if not label_col:
+        log("  ✗ 未检测到标签列，跳过此表"); return None
+
+    df['sub'] = df[sub_col].apply(lambda x: parse_id(x,'S'))
+    df['vid'] = df[vid_col].apply(lambda x: parse_id(x,'V'))
+    df['label'] = df[label_col].apply(parse_label)
+    df = df[df['sub']>=0].copy().sort_values(['sub','vid','time']).reset_index(drop=True)
+    log(f"  >>> 有效数据: {len(df)} 行, {df['sub'].nunique()} 位被试")
+
+    # ---- 自适应特征工程 ----
+    log("  [3/4] 自适应特征工程...")
+    eps = 1e-6
+    band_map = {'delta':['delta','Delta'],'theta':['theta','Theta'],
+                'alpha1':['alpha1','Alpha1','lowAlpha','low_alpha'],
+                'alpha2':['alpha2','Alpha2','highAlpha','high_alpha'],
+                'beta1':['beta1','Beta1','lowBeta','low_beta'],
+                'beta2':['beta2','Beta2','highBeta','high_beta'],
+                'gamma1':['gamma1','Gamma1','lowGamma','low_gamma'],
+                'gamma2':['gamma2','Gamma2','highGamma','high_gamma'],
+                'attention':['attention','Attention','att'],
+                'mediation':['mediation','Mediation','meditation','Meditation']}
+    available = []
+    for std, aliases in band_map.items():
+        f = detect_col(df, aliases)
+        if f:
+            if f != std: df[std] = df[f]
+            available.append(std)
+    # 宽频带拆分
+    for pair, single_keys in [(['alpha1','alpha2'],['alpha','Alpha']),
+                               (['beta1','beta2'],['beta','Beta']),
+                               (['gamma1','gamma2'],['gamma','Gamma'])]:
+        if pair[0] not in available and pair[1] not in available:
+            f = detect_col(df, single_keys)
+            if f:
+                df[pair[0]] = df[f]*0.5; df[pair[1]] = df[f]*0.5
+                available.extend(pair)
+    log(f"  >>> 基础频段: {available}")
+
+    # 合成宽频带 + 认知比值
+    derived, cognitive = [], []
+    for name, p1, p2 in [('alpha_total','alpha1','alpha2'),('beta_total','beta1','beta2'),('gamma_total','gamma1','gamma2')]:
+        if p1 in available and p2 in available:
+            df[name] = df[p1]+df[p2]; derived.append(name)
+    if 'theta' in available and 'beta_total' in derived:
+        df['theta_beta'] = df['theta']/(df['beta_total']+eps); cognitive.append('theta_beta')
+    if 'theta' in available and 'alpha_total' in derived:
+        df['theta_alpha'] = df['theta']/(df['alpha_total']+eps); cognitive.append('theta_alpha')
+    if 'alpha_total' in derived and 'beta_total' in derived:
+        df['alpha_beta'] = df['alpha_total']/(df['beta_total']+eps); cognitive.append('alpha_beta')
+    if 'beta1' in available and 'alpha_total' in derived and 'theta' in available:
+        df['engagement'] = df['beta1']/(df['alpha_total']+df['theta']+eps); cognitive.append('engagement')
+    if 'theta' in available and 'alpha_total' in derived and 'beta_total' in derived:
+        df['fatigue'] = (df['theta']+df['alpha_total'])/(df['beta_total']+eps); cognitive.append('fatigue')
+    if 'beta_total' in derived and 'delta' in available and 'theta' in available:
+        df['focus'] = df['beta_total']/(df['delta']+df['theta']+eps); cognitive.append('focus')
+
+    core = available + cognitive
+    group = df.groupby(['sub','vid'])
+    for c in core: df[c+'_d1'] = group[c].diff().fillna(0)
+    for c in core: df[c+'_d2'] = group[c+'_d1'].diff().fillna(0)
+    for c in core:
+        df[c+'_m3'] = group[c].rolling(3,min_periods=1).mean().reset_index([0,1],drop=True)
+        df[c+'_s3'] = group[c].rolling(3,min_periods=1).std().fillna(0).reset_index([0,1],drop=True)
+    for c in core:
+        df[c+'_m5'] = group[c].rolling(5,min_periods=1).mean().reset_index([0,1],drop=True)
+        df[c+'_s5'] = group[c].rolling(5,min_periods=1).std().fillna(0).reset_index([0,1],drop=True)
+    feats = core+[c+'_d1' for c in core]+[c+'_d2' for c in core]+[c+'_m3' for c in core]+[c+'_s3' for c in core]+[c+'_m5' for c in core]+[c+'_s5' for c in core]
+    dims = len(feats)
+    log(f"  >>> 特征空间: {dims} 维 (核心 {len(core)} × 7)")
+
+    # ---- XGBoost 5-Fold ----
+    log("  [4/4] XGBoost Subject-Dependent 5-Fold 交叉验证...")
+    try:
+        model = xgb.XGBClassifier(n_estimators=300,max_depth=8,learning_rate=0.05,
+                                  tree_method='hist',device='cuda',eval_metric='logloss',random_state=42)
+        log("  >>> GPU 加速 (CUDA)")
+    except:
+        model = xgb.XGBClassifier(n_estimators=300,max_depth=8,learning_rate=0.05,
+                                  n_jobs=-1,eval_metric='logloss',random_state=42)
+        log("  >>> CPU 并行计算")
+
+    subject_accs, total_correct, total_samples = [], 0, 0
+    for sub in sorted(df['sub'].unique()):
+        X = np.nan_to_num(df.loc[df['sub']==sub, feats].values.astype(float))
+        y = df.loc[df['sub']==sub, 'label'].values
+        if len(np.unique(y))<2 or len(y)<10: continue
+        kf = StratifiedKFold(n_splits=5,shuffle=True,random_state=42)
+        fold_accs = []
+        for tri, tei in kf.split(X,y):
+            mu, sd = np.mean(X[tri],0), np.std(X[tri],0); sd[sd==0]=1e-6
+            Xtr, Xte = (X[tri]-mu)/sd, (X[tei]-mu)/sd
+            model.fit(Xtr, y[tri]); pred = model.predict(Xte)
+            fold_accs.append(accuracy_score(y[tei],pred)*100)
+            total_correct += np.sum(pred==y[tei]); total_samples += len(y[tei])
+        sa = np.mean(fold_accs); subject_accs.append(sa)
+        log(f"  - 被试 S{sub} 平均验证准确率: {sa:.2f}%")
+
+    if not subject_accs:
+        log("  ✗ 无有效被试"); return None
+
+    acc = np.mean(subject_accs)
+    report = {'table':table_name,'samples':total_samples,'subjects':len(subject_accs),
+              'dims':dims,'bands':available,'cognitive':cognitive,'accuracy':acc}
+
+    log(f"\n  {'='*60}")
+    log(f"  [{table_name}] 性能评估报告")
+    log(f"  {'='*60}")
+    log(f"  - 数据总量: {total_samples} 帧 | 被试数: {len(subject_accs)}")
+    log(f"  - 特征维度: {dims} 维 | 频段: {available}")
+    log(f"  - 认知比值: {cognitive}")
+    log(f"  - 模型: XGBoost (300 trees, depth=8)")
+    log(f"  {'-'*40}")
+    log(f"  > 平均准确率: {acc:.2f}% <")
+    log(f"  {'-'*40}")
+    return report
+
+# ============================================================
+#  主入口
+# ============================================================
+log("="*70)
+log("  EEG 认知状态高精度分类验证模块 (Subject-Dependent Analysis)")
+log("  自适应多数据源引擎 V9 — 全库自动扫描版")
+log("="*70)
+
+client = InfluxDBClient3(host=INFLUX_HOST, database=INFLUX_DB, token=INFLUX_TOKEN, org="")
+
+if '--table' in sys.argv:
+    idx = sys.argv.index('--table')
+    tables = [sys.argv[idx+1]] if idx+1<len(sys.argv) else ['kaggle_eeg']
+    log(f"  [模式] 指定表: {tables[0]}")
+else:
+    log("  [模式] 全库自动扫描")
+    found = discover_tables(client)
+    if not found: log("  ✗ 未发现可分析的EEG表！"); sys.exit(1)
+    tables = select_tables(found)
+
+log(f"\n  将分析 {len(tables)} 张表: {tables}\n")
+
+reports = []
+for i, t in enumerate(tables):
+    if len(tables) > 1:
+        log(f"\n{'━'*70}")
+        log(f"  ▶ [{i+1}/{len(tables)}] {t}")
+        log(f"{'━'*70}")
+    r = analyze_table(client, t)
+    if r: reports.append(r)
+
+# ---- 汇总报告 ----
+if len(reports) > 1:
+    log(f"\n\n{'═'*70}")
+    log("  全库 EEG 分析汇总报告")
+    log(f"{'═'*70}")
+    log(f"  {'表名':20s} | {'被试':>4s} | {'样本':>8s} | {'维度':>4s} | {'准确率':>8s}")
+    log(f"  {'-'*20}-+-{'-'*4}-+-{'-'*8}-+-{'-'*4}-+-{'-'*8}")
+    for r in reports:
+        log(f"  {r['table']:20s} | {r['subjects']:>4d} | {r['samples']:>8,} | {r['dims']:>4d} | {r['accuracy']:>7.2f}%")
+    overall = np.mean([r['accuracy'] for r in reports])
+    log(f"  {'-'*20}-+-{'-'*4}-+-{'-'*8}-+-{'-'*4}-+-{'-'*8}")
+    log(f"  {'全局平均':20s} |      |          |      | {overall:>7.2f}%")
+    log(f"{'═'*70}")
+elif len(reports) == 1:
+    log("\n" + "="*70)

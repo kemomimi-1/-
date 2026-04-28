@@ -1,0 +1,260 @@
+"""
+EEG 通用数据导入器 (Universal CSV → InfluxDB Importer)
+======================================================
+用途: 将任意来源的 EEG 频段功率 CSV 文件智能导入 InfluxDB。
+      自动识别不同数据集的列名差异，标准化后写入统一 Schema。
+
+使用方法:
+  python eeg_universal_importer.py <csv_path> [--table <table_name>]
+  
+示例:
+  python eeg_universal_importer.py ./external_data.csv
+  python eeg_universal_importer.py ./external_data.csv --table external_eeg
+"""
+import sys
+import os
+import numpy as np
+import pandas as pd
+from influxdb_client_3 import InfluxDBClient3, Point
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+
+def log(msg):
+    print(msg, flush=True)
+
+# ============================================================
+#  列名别名映射表 (Column Alias Map)
+#  覆盖了 Kaggle、NeuroSky、Emotiv、Mendeley 等常见数据集的命名惯例
+# ============================================================
+COLUMN_ALIASES = {
+    # 频段特征
+    'delta':      ['delta', 'Delta', 'DELTA', 'delta_power', 'Delta_Power'],
+    'theta':      ['theta', 'Theta', 'THETA', 'theta_power', 'Theta_Power'],
+    'alpha1':     ['alpha1', 'Alpha1', 'lowAlpha', 'low_alpha', 'Low Alpha', 'alpha_low'],
+    'alpha2':     ['alpha2', 'Alpha2', 'highAlpha', 'high_alpha', 'High Alpha', 'alpha_high'],
+    'alpha':      ['alpha', 'Alpha', 'ALPHA', 'alpha_power', 'Alpha_Power'],
+    'beta1':      ['beta1', 'Beta1', 'lowBeta', 'low_beta', 'Low Beta', 'beta_low'],
+    'beta2':      ['beta2', 'Beta2', 'highBeta', 'high_beta', 'High Beta', 'beta_high'],
+    'beta':       ['beta', 'Beta', 'BETA', 'beta_power', 'Beta_Power'],
+    'gamma1':     ['gamma1', 'Gamma1', 'lowGamma', 'low_gamma', 'Low Gamma', 'gamma_low'],
+    'gamma2':     ['gamma2', 'Gamma2', 'highGamma', 'high_gamma', 'High Gamma', 'gamma_high', 'midGamma'],
+    'gamma':      ['gamma', 'Gamma', 'GAMMA', 'gamma_power', 'Gamma_Power'],
+    # NeuroSky 复合指标
+    'attention':  ['attention', 'Attention', 'att', 'attention_esense', 'eSense_Attention', 'focus'],
+    'mediation':  ['mediation', 'Mediation', 'meditation', 'Meditation', 'med', 'meditation_esense', 'eSense_Meditation', 'relax'],
+    # 被试与分组标识
+    'subject_id': ['subject_id', 'SubjectID', 'subject', 'Subject', 'sub', 'user_id', 'UserID',
+                   'participant', 'Participant', 'participant_id', 'id', 'ID', 'student_id'],
+    'video_id':   ['video_id', 'VideoID', 'video', 'Video', 'vid', 'trial', 'Trial',
+                   'trial_id', 'session', 'Session', 'session_id', 'stimulus', 'task'],
+    # 标签列
+    'label':      ['confused', 'Confused', 'label', 'Label', 'class', 'Class', 'target', 'Target',
+                   'user-definedlabeln', 'predefinedlabel', 'state', 'State',
+                   'cognitive_state', 'is_confused', 'output'],
+}
+
+def find_column(df_columns, target_key):
+    """在 DataFrame 列名中查找匹配的别名"""
+    aliases = COLUMN_ALIASES.get(target_key, [])
+    for alias in aliases:
+        if alias in df_columns:
+            return alias
+    return None
+
+def parse_label(val):
+    """将各种格式的标签统一转化为 yes/no"""
+    s = str(val).strip().lower()
+    if s in ('yes', '1', '1.0', 'true', 'confused', 'high', 'positive'):
+        return 'yes'
+    elif s in ('no', '0', '0.0', 'false', 'not confused', 'low', 'negative', 'focused'):
+        return 'no'
+    else:
+        # 尝试作为数字解析：>0.5 视为 yes
+        try:
+            return 'yes' if float(s) > 0.5 else 'no'
+        except:
+            return 'no'
+
+def main():
+    log("=" * 70)
+    log("  EEG 通用数据导入器 (Universal CSV → InfluxDB Importer)")
+    log("=" * 70)
+
+    # ---- 解析命令行参数 ----
+    if len(sys.argv) < 2:
+        log("  用法: python eeg_universal_importer.py <csv文件路径> [--table <表名>]")
+        log("  示例: python eeg_universal_importer.py ./EEG_data.csv --table external_eeg")
+        sys.exit(1)
+
+    csv_path = sys.argv[1]
+    table_name = 'kaggle_eeg'  # 默认表名
+    if '--table' in sys.argv:
+        idx = sys.argv.index('--table')
+        if idx + 1 < len(sys.argv):
+            table_name = sys.argv[idx + 1]
+
+    if not os.path.exists(csv_path):
+        log(f"  错误: 文件不存在 → {csv_path}")
+        sys.exit(1)
+
+    # ---- 1. 加载 CSV ----
+    log(f"  [1/4] 加载 CSV 文件: {csv_path}")
+    df = pd.read_csv(csv_path)
+    log(f"  >>> 原始数据: {len(df)} 行, {len(df.columns)} 列")
+    log(f"  >>> 检测到的列名: {list(df.columns)}")
+
+    # ---- 2. 智能列名映射 ----
+    log("  [2/4] 执行智能列名映射...")
+    col_map = {}
+    cols = list(df.columns)
+
+    # 映射频段列
+    band_targets = ['delta', 'theta', 'alpha1', 'alpha2', 'beta1', 'beta2', 'gamma1', 'gamma2', 'attention', 'mediation']
+    for target in band_targets:
+        found = find_column(cols, target)
+        if found:
+            col_map[target] = found
+            log(f"    ✓ {target:12s} ← 映射自 '{found}'")
+
+    # 处理宽频带合并情况（只有 alpha 没有 alpha1/alpha2）
+    if 'alpha1' not in col_map and 'alpha2' not in col_map:
+        found_alpha = find_column(cols, 'alpha')
+        if found_alpha:
+            col_map['alpha1'] = found_alpha
+            col_map['alpha2'] = found_alpha  # alpha2 复用同一列（后续会 /2）
+            log(f"    ✓ alpha1/alpha2 ← 从单一 '{found_alpha}' 列拆分")
+
+    if 'beta1' not in col_map and 'beta2' not in col_map:
+        found_beta = find_column(cols, 'beta')
+        if found_beta:
+            col_map['beta1'] = found_beta
+            col_map['beta2'] = found_beta
+            log(f"    ✓ beta1/beta2  ← 从单一 '{found_beta}' 列拆分")
+
+    if 'gamma1' not in col_map and 'gamma2' not in col_map:
+        found_gamma = find_column(cols, 'gamma')
+        if found_gamma:
+            col_map['gamma1'] = found_gamma
+            col_map['gamma2'] = found_gamma
+            log(f"    ✓ gamma1/gamma2 ← 从单一 '{found_gamma}' 列拆分")
+
+    # 映射被试 ID
+    sub_col = find_column(cols, 'subject_id')
+    vid_col = find_column(cols, 'video_id')
+    label_col = find_column(cols, 'label')
+
+    if sub_col:
+        log(f"    ✓ subject_id   ← 映射自 '{sub_col}'")
+    else:
+        log("    ⚠ 未找到被试 ID 列，将为所有数据分配 subject_id = 'S0'")
+
+    if vid_col:
+        log(f"    ✓ video_id     ← 映射自 '{vid_col}'")
+    else:
+        log("    ⚠ 未找到视频/试次 ID 列，将为所有数据分配 video_id = 'V0'")
+
+    if label_col:
+        log(f"    ✓ label        ← 映射自 '{label_col}'")
+    else:
+        log("    ✗ 错误: 未找到标签列！无法导入。")
+        log(f"      支持的标签列名: {COLUMN_ALIASES['label']}")
+        sys.exit(1)
+
+    # 检查最低频段要求
+    required_bands = ['delta', 'theta']
+    for rb in required_bands:
+        if rb not in col_map:
+            log(f"    ✗ 错误: 缺少必要频段列 '{rb}'！无法导入。")
+            sys.exit(1)
+
+    # ---- 3. 构建标准化 DataFrame ----
+    log("  [3/4] 构建标准化数据帧并写入 InfluxDB...")
+    points = []
+    base_time = datetime.utcnow()
+    skipped = 0
+
+    for i, row in df.iterrows():
+        try:
+            # 读取频段值（缺失的填 0）
+            vals = {}
+            for band in band_targets:
+                if band in col_map:
+                    v = row[col_map[band]]
+                    vals[band] = float(v) if pd.notna(v) else 0.0
+                    # 如果是宽频带拆分，alpha1/alpha2 各取一半
+                    if band in ('alpha2', 'beta2', 'gamma2') and col_map.get(band) == col_map.get(band.replace('2', '1')):
+                        vals[band] = vals[band] * 0.5
+                        if band.replace('2', '1') in vals:
+                            vals[band.replace('2', '1')] = vals[band]
+                else:
+                    vals[band] = 0.0
+
+            # 读取标识
+            sid = str(row[sub_col]).strip() if sub_col else 'S0'
+            # 确保 subject_id 有 S 前缀
+            if not sid.startswith('S') and not sid.startswith('s'):
+                sid = f'S{sid}'
+            
+            vid_val = str(row[vid_col]).strip() if vid_col else 'V0'
+            if not vid_val.startswith('V') and not vid_val.startswith('v'):
+                vid_val = f'V{vid_val}'
+
+            label_val = parse_label(row[label_col])
+
+            point_time = base_time + timedelta(milliseconds=i * 500)
+
+            p = Point(table_name) \
+                .tag("subject_id", sid) \
+                .tag("video_id", vid_val) \
+                .tag("confused", label_val) \
+                .field("delta", vals['delta']) \
+                .field("theta", vals['theta']) \
+                .field("alpha1", vals.get('alpha1', 0.0)) \
+                .field("alpha2", vals.get('alpha2', 0.0)) \
+                .field("beta1", vals.get('beta1', 0.0)) \
+                .field("beta2", vals.get('beta2', 0.0)) \
+                .field("gamma1", vals.get('gamma1', 0.0)) \
+                .field("gamma2", vals.get('gamma2', 0.0)) \
+                .field("attention", vals.get('attention', 0.0)) \
+                .field("mediation", vals.get('mediation', 0.0)) \
+                .time(point_time)
+
+            points.append(p)
+        except Exception as e:
+            skipped += 1
+            continue
+
+    # ---- 4. 批量写入 ----
+    log(f"  >>> 标准化完成: {len(points)} 条有效记录 (跳过 {skipped} 条异常行)")
+
+    client = InfluxDBClient3(host="http://localhost:8181", database="eeg_db", token="apiv3_token", org="")
+
+    batch_size = 5000
+    for start in range(0, len(points), batch_size):
+        batch = points[start:start + batch_size]
+        client.write(record=batch)
+        log(f"    写入进度: {min(start + batch_size, len(points))}/{len(points)}")
+
+    # ---- 输出摘要 ----
+    label_counts = df[label_col].apply(parse_label).value_counts()
+    unique_subs = df[sub_col].nunique() if sub_col else 1
+
+    log("")
+    log("=" * 70)
+    log("  导入完成摘要")
+    log("=" * 70)
+    log(f"  - 数据源文件: {csv_path}")
+    log(f"  - 目标 InfluxDB 表: {table_name}")
+    log(f"  - 写入记录总数: {len(points)}")
+    log(f"  - 识别到的被试数: {unique_subs}")
+    log(f"  - 标签分布: {dict(label_counts)}")
+    log(f"  - 映射的频段列: {[k for k in band_targets if k in col_map]}")
+    log(f"  - 缺失的频段列 (已填零): {[k for k in band_targets if k not in col_map]}")
+    log("=" * 70)
+    log(f"  现在可以运行分析引擎了:")
+    log(f"  python eeg_high_accuracy_analyzer.py" + (f" --table {table_name}" if table_name != 'kaggle_eeg' else ""))
+    log("=" * 70)
+
+if __name__ == '__main__':
+    main()

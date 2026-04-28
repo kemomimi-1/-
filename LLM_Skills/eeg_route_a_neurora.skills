@@ -1,0 +1,110 @@
+"""
+EEG 困惑检测 - 路线A：NeuroRA 手册方法 (tbyt_decoding_kfold)
+============================================================
+适用场景：高频原始脑电数据、多导联设备、学术论文规范要求
+数据源：InfluxDB eeg_db/kaggle_eeg
+验证准确率：Peak ~65% (低频预处理数据) / 更高 (高频原始数据)
+"""
+import numpy as np
+import pandas as pd
+import os
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from scipy.stats import ttest_1samp
+from influxdb_client_3 import InfluxDBClient3
+import warnings
+warnings.filterwarnings('ignore')
+plt.rcParams["figure.dpi"] = 150
+
+output_file = open(r"C:\Users\ROG\Desktop\项目\neurora_output.txt", "w", encoding="utf-8")
+def log(msg):
+    print(msg)
+    output_file.write(msg + "\n")
+    output_file.flush()
+
+log("=" * 65)
+log("  Route A: NeuroRA Handbook Method (tbyt_decoding_kfold)")
+log("=" * 65)
+
+client = InfluxDBClient3(host="http://localhost:8181", database="eeg_db", token="apiv3_token", org="")
+df = client.query("SELECT time, subject_id, video_id, delta, theta, alpha1, alpha2, beta1, beta2, gamma1, gamma2, attention, mediation, confused FROM kaggle_eeg ORDER BY subject_id, video_id, time").to_pandas()
+
+def parse_id(val, prefix):
+    s = str(val).strip()
+    return int(float(s[len(prefix):])) if s.startswith(prefix) else int(float(s)) if str(val).strip() else -1
+
+df['sub'] = df['subject_id'].apply(lambda x: parse_id(x, 'S'))
+df['vid'] = df['video_id'].apply(lambda x: parse_id(x, 'V'))
+df['label'] = (df['confused'].astype(str).str.strip().str.lower() == 'yes').astype(int)
+df = df[df['sub'] >= 0].copy().drop_duplicates(subset=['sub','vid','delta','theta']).sort_values(by=['sub', 'vid', 'time']).reset_index(drop=True)
+
+df['alpha_total'] = df['alpha1'] + df['alpha2']
+df['beta_total'] = df['beta1'] + df['beta2']
+df['theta_beta_ratio'] = df['theta'] / (df['beta_total'] + 1e-6)
+df['engagement'] = df['beta1'] / (df['alpha_total'] + df['theta'] + 1e-6)
+core_feats = ['delta','theta','alpha1','alpha2','beta1','beta2','gamma1','gamma2','attention','mediation','theta_beta_ratio','engagement']
+
+group = df.groupby(['sub', 'vid'])
+for col in core_feats:
+    df[col + '_diff'] = group[col].diff().fillna(0)
+    df[col + '_mean'] = group[col].rolling(3, min_periods=1).mean().reset_index([0,1], drop=True)
+    df[col + '_std'] = group[col].rolling(3, min_periods=1).std().fillna(0).reset_index([0,1], drop=True)
+
+V3_feats = core_feats + [c+'_diff' for c in core_feats] + [c+'_mean' for c in core_feats] + [c+'_std' for c in core_feats]
+n_ch = len(V3_feats)
+log(f"  Feature expansion: 8 -> {n_ch} channels")
+
+WIN, STEP = 10, 5
+subjects = sorted(df['sub'].unique())
+n_subs = len(subjects)
+trials_by_sub = {s: ([], []) for s in subjects}
+for sub in subjects:
+    for vid in sorted(df[df['sub']==sub]['vid'].unique()):
+        seg = df[(df['sub']==sub) & (df['vid']==vid)]
+        vals = seg[V3_feats].values.astype(float)
+        lab = int(seg['label'].mode().iloc[0])
+        for i in range(0, len(vals) - WIN + 1, STEP):
+            trials_by_sub[sub][0].append(vals[i:i+WIN].T)
+            trials_by_sub[sub][1].append(lab)
+
+min_t = min(len(trials_by_sub[s][0]) for s in subjects)
+data = np.zeros([n_subs, min_t, n_ch, WIN])
+labels = np.zeros([n_subs, min_t])
+for i, s in enumerate(subjects):
+    for j in range(min_t):
+        data[i,j] = trials_by_sub[s][0][j]
+        labels[i,j] = trials_by_sub[s][1][j]
+log(f"  Tensor shape: {data.shape}")
+
+CACHE_FILE = "C:/Users/ROG/Desktop/项目/neurora_hybrid_cache.npy"
+if os.path.exists(CACHE_FILE):
+    log(f"\n  [CACHE HIT] Loading {os.path.basename(CACHE_FILE)}")
+    accs = np.load(CACHE_FILE)
+else:
+    log(f"\n  [RUNNING] tbyt_decoding_kfold...")
+    from neurora.decoding import tbyt_decoding_kfold
+    navg = max(2, min_t // 20)
+    accs = tbyt_decoding_kfold(data, labels, n=2, navg=navg, time_win=2, time_step=2, nfolds=3, nrepeats=10, smooth=True)
+    np.save(CACHE_FILE, accs)
+    log("  Completed & Cached.")
+
+avg = np.mean(accs, axis=0)
+log(f"\n{'=' * 65}")
+log(f"  Route A Results (NeuroRA Handbook)")
+log(f"{'=' * 65}")
+log(f"  Peak Accuracy: {np.max(avg)*100:.2f}%")
+log(f"  Mean Accuracy: {np.mean(avg)*100:.2f}%")
+for i, s in enumerate(subjects):
+    log(f"    Subject {s}: peak {np.max(accs[i])*100:.2f}%")
+sig = sum(1 for t in range(accs.shape[1]) if ttest_1samp(accs[:,t], 0.5)[1] < 0.05 and np.mean(accs[:,t]) > 0.5)
+log(f"  Significant Time-Windows: {sig}/{accs.shape[1]} (p<0.05)")
+
+try:
+    from neurora.rsa_plot import plot_tbyt_decoding_acc
+    td, ti = WIN * 0.5, (WIN * 0.5) / accs.shape[1]
+    plot_tbyt_decoding_acc(accs, start_time=0, end_time=td, time_interval=ti, chance=0.5, p=0.05, cbpt=True, stats_time=[0, td], xlim=[0, td], ylim=[0.3, 0.9])
+    plt.savefig("C:/Users/ROG/Desktop/项目/neurora_hybrid_result.png", dpi=150, bbox_inches='tight')
+    log("  Plot saved: neurora_hybrid_result.png")
+except: pass
+output_file.close()

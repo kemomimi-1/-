@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EEG AI Platform - 智能脑电分析平台</title>
+    <meta name="description" content="专业的脑电数据分析平台，集成AI智能分析和实时频段监测">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+<div class="app-container">
+
+    <!-- ========== 顶部导航栏 ========== -->
+    <div class="top-navbar" id="topNavbar">
+        <div class="navbar-brand">
+            <span class="brand-dot"></span>
+            <span class="brand-text">EEG AI Platform</span>
+        </div>
+        <div class="navbar-tabs">
+            <button class="nav-tab active" id="tabChat" onclick="switchTab('chat')">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                </svg>
+                AI 对话
+            </button>
+            <button class="nav-tab" id="tabMonitor" onclick="switchTab('monitor')">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"></polyline>
+                </svg>
+                实时监测
+            </button>
+        </div>
+        <div class="navbar-actions">
+            <button class="navbar-action-btn" id="startAnalysisNavBtn" onclick="startRealTimeAnalysis()" title="启动实时脑电数据智能分析">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="5,3 19,12 5,21 5,3"></polygon>
+                </svg>
+                开始分析
+            </button>
+            <button class="navbar-action-btn stop-btn" id="stopAnalysisNavBtn" onclick="stopRealTimeAnalysis()" style="display:none;" title="停止实时数据分析">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="6" y="6" width="12" height="12"></rect>
+                </svg>
+                停止分析
+            </button>
+        </div>
+    </div>
+
+    <!-- ========== AI 对话页面 ========== -->
+    <div class="page-content" id="pageChatContent">
+        <div class="main-layout">
+            <!-- 左侧边栏 -->
+            <div class="left-sidebar" id="leftSidebar">
+                <div class="sidebar-header">
+                    <button class="sidebar-toggle" onclick="toggleLeftSidebar()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="3" y1="6" x2="21" y2="6"></line>
+                            <line x1="3" y1="12" x2="21" y2="12"></line>
+                            <line x1="3" y1="18" x2="21" y2="18"></line>
+                        </svg>
+                    </button>
+                    <div class="user-info">
+                        <div class="user-name" id="userName">用户</div>
+                        <div class="user-status">
+                            <span class="status-dot"></span>
+                            <span id="userStatus">在线</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="conversation-controls">
+                    <button class="new-conversation-btn" onclick="createNewConversation()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="12" y1="5" x2="12" y2="19"></line>
+                            <line x1="5" y1="12" x2="19" y2="12"></line>
+                        </svg>
+                        新建对话
+                    </button>
+                    <div class="filter-buttons">
+                        <button class="filter-btn active" data-filter="all" onclick="filterConversations('all')">全部</button>
+                        <button class="filter-btn" data-filter="bookmarked" onclick="filterConversations('bookmarked')">收藏</button>
+                    </div>
+                </div>
+
+                <div class="conversation-list" id="conversationList">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        加载对话历史...
+                    </div>
+                </div>
+            </div>
+
+            <!-- 主内容区域 -->
+            <div class="main-content">
+                <div class="chat-header">
+                    <div class="chat-title-section">
+                        <h1 class="chat-title" id="chatTitle">EEG AI Assistant</h1>
+                        <div class="ai-status">
+                            <span class="status-dot"></span>
+                            <span id="aiStatus">智能工具协作系统 v3.0</span>
+                        </div>
+                    </div>
+                    <div class="header-actions">
+                        <button class="action-button" onclick="clearChat()">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M3 6h18"></path>
+                                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                            </svg>
+                            清除对话
+                        </button>
+                        <button class="action-button" onclick="logout()">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                                <polyline points="16,17 21,12 16,7"></polyline>
+                                <line x1="21" y1="12" x2="9" y2="12"></line>
+                            </svg>
+                            退出
+                        </button>
+                    </div>
+                </div>
+
+                <div class="chat-messages" id="chatMessages">
+                    <div class="message assistant">
+                        <div class="message-avatar">🧠</div>
+                        <div class="message-content">
+                            <div class="message-bubble">
+                                您好！我是EEG AI Assistant，专业的脑电数据分析助手。我现在配备了智能工具协作系统v3.0，可以帮助您：
+                                <br><br>
+                                • 深度分析您的脑电数据<br>
+                                • 生成综合性数据报告和洞察<br>
+                                • 智能选择最适合的工具组合<br>
+                                • 协助数据传输和会话管理<br>
+                                • 提供实时脑电状态分析<br>
+                                <br>
+                                如需开始数据传输，请点击右侧的连接控制面板。如需查看实时频段数据，请切换到"实时监测"页面。有什么我可以帮助您的吗？
+                            </div>
+                            <div class="message-meta">
+                                <span class="message-time">刚刚</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="chat-input-container">
+                    <div class="chat-input-wrapper">
+                        <textarea class="chat-input" id="chatInput" placeholder="输入您的问题..." rows="1"></textarea>
+                        <button class="send-button" id="sendButton" onclick="sendMessage()">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="22" y1="2" x2="11" y2="13"></line>
+                                <polygon points="22,2 15,22 11,13 2,9 22,2"></polygon>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右侧边栏 -->
+            <div class="right-sidebar" id="rightSidebar">
+                <div class="right-sidebar-header">
+                    <h3 class="sidebar-title">智能控制面板</h3>
+                    <button class="sidebar-toggle" onclick="toggleRightSidebar()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="15,18 9,12 15,6"></polyline>
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="collapsed-indicator">
+                    📊
+                </div>
+
+                <div class="right-sidebar-content">
+                    <!-- 连接控制 -->
+                    <div class="accordion">
+                        <button class="accordion-header" onclick="toggleAccordion(this)">
+                            <span>🔗 连接控制</span>
+                            <svg class="accordion-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="6,9 12,15 18,9"></polyline>
+                            </svg>
+                        </button>
+                        <div class="accordion-content active">
+                            <div class="accordion-body">
+                                <div class="info-card">
+                                    <div class="info-row">
+                                        <span class="info-label">连接状态:</span>
+                                        <span class="info-value" id="connectionStatus">
+                                            <span class="status-indicator status-inactive"></span>未连接
+                                        </span>
+                                    </div>
+                                    <div class="info-row">
+                                        <span class="info-label">活跃会话:</span>
+                                        <span class="info-value" id="activeSession">无</span>
+                                    </div>
+                                    <div class="info-row">
+                                        <span class="info-label">端口分配:</span>
+                                        <span class="info-value" id="portAllocationStatus">未分配</span>
+                                    </div>
+                                </div>
+
+                                <div style="margin-bottom: 12px;">
+                                    <button class="btn" id="connectBtn" onclick="requestConnection()" style="width: 100%; margin-bottom: 8px;">
+                                        🚀 请求连接
+                                    </button>
+                                    <button class="btn btn-danger" id="disconnectBtn" onclick="disconnectConnection()" style="width: 100%; margin-bottom: 8px;" disabled>
+                                        🔌 断开连接
+                                    </button>
+                                    <button class="btn btn-outline" onclick="forceEndSession()" style="width: 100%; font-size: 12px;">
+                                        ⚡ 强制结束会话
+                                    </button>
+                                </div>
+
+                                <div id="portInfo" class="hidden">
+                                    <div class="port-config">
+                                        <div class="port-item">
+                                            <div class="port-label">Raw</div>
+                                            <div class="port-number" id="rawPort">-</div>
+                                        </div>
+                                        <div class="port-item">
+                                            <div class="port-label">Filt</div>
+                                            <div class="port-number" id="filtPort">-</div>
+                                        </div>
+                                        <div class="port-item">
+                                            <div class="port-label">Band</div>
+                                            <div class="port-number" id="bandPort">-</div>
+                                        </div>
+                                    </div>
+                                    <div class="info-row">
+                                        <span class="info-label">服务器IP:</span>
+                                        <span class="info-value" id="serverIP">-</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 数据流状态 -->
+                    <div class="accordion">
+                        <button class="accordion-header" onclick="toggleAccordion(this)">
+                            <span>🌊 数据流状态</span>
+                            <svg class="accordion-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="6,9 12,15 18,9"></polyline>
+                            </svg>
+                        </button>
+                        <div class="accordion-content">
+                            <div class="accordion-body">
+                                <div class="info-card">
+                                    <div class="info-row">
+                                        <span class="info-label">Raw数据流:</span>
+                                        <span class="info-value" id="rawStreamStatus">
+                                            <span class="status-indicator status-waiting"></span>等待中
+                                        </span>
+                                    </div>
+                                    <div class="info-row">
+                                        <span class="info-label">Filt数据流:</span>
+                                        <span class="info-value" id="filtStreamStatus">
+                                            <span class="status-indicator status-waiting"></span>等待中
+                                        </span>
+                                    </div>
+                                    <div class="info-row">
+                                        <span class="info-label">Band数据流:</span>
+                                        <span class="info-value" id="bandStreamStatus">
+                                            <span class="status-indicator status-waiting"></span>等待中
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div class="stats-grid">
+                                    <div class="stat-item">
+                                        <div class="stat-value" id="rawPackets">0</div>
+                                        <div class="stat-label">Raw包数</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value" id="filtPackets">0</div>
+                                        <div class="stat-label">Filt包数</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value" id="bandPackets">0</div>
+                                        <div class="stat-label">Band包数</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value" id="transmissionRate">0/s</div>
+                                        <div class="stat-label">传输率</div>
+                                    </div>
+                                </div>
+
+                                <button class="btn btn-outline" onclick="refreshStreamStatus()" style="width: 100%; font-size: 12px;">
+                                    🔄 刷新状态
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 会话管理 -->
+                    <div class="accordion">
+                        <button class="accordion-header" onclick="toggleAccordion(this)">
+                            <span>📋 会话管理</span>
+                            <svg class="accordion-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="6,9 12,15 18,9"></polyline>
+                            </svg>
+                        </button>
+                        <div class="accordion-content">
+                            <div class="accordion-body">
+                                <div style="margin-bottom: 12px;">
+                                    <button class="btn btn-outline" onclick="loadSessionStatistics()" style="width: 100%; margin-bottom: 8px;">
+                                        📊 查看统计
+                                    </button>
+                                    <button class="btn btn-outline" onclick="loadLatestSession()" style="width: 100%; margin-bottom: 8px;">
+                                        📈 最新会话
+                                    </button>
+                                </div>
+
+                                <div class="session-list" id="sessionList">
+                                    <div class="loading">
+                                        <div class="spinner"></div>
+                                        加载中...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 配置说明 -->
+                    <div class="accordion">
+                        <button class="accordion-header" onclick="toggleAccordion(this)">
+                            <span>📋 配置说明</span>
+                            <svg class="accordion-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="6,9 12,15 18,9"></polyline>
+                            </svg>
+                        </button>
+                        <div class="accordion-content">
+                            <div class="accordion-body">
+                                <div style="font-size: 13px; line-height: 1.4; color: #666;">
+                                    <p style="margin-bottom: 8px;"><strong>OpenBCI GUI 配置:</strong></p>
+                                    <p style="margin-bottom: 6px;">1. 选择 SYNTHETIC(algorithmic) 8chan</p>
+                                    <p style="margin-bottom: 6px;">2. 协议设置为 UDP</p>
+                                    <p style="margin-bottom: 6px;">3. 按顺序配置三个Stream:</p>
+                                    <p style="margin-bottom: 4px; padding-left: 12px;">• Stream 1: TimeSeriesRaw</p>
+                                    <p style="margin-bottom: 4px; padding-left: 12px;">• Stream 2: TimeSeriesFilt</p>
+                                    <p style="margin-bottom: 8px; padding-left: 12px;">• Stream 3: AvgBandPower</p>
+                                    <p style="font-size: 12px; color: #f59e0b;">⚠️ IP和Port及Data Type顺序和类型必须严格按照要求配置</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                                    <!-- Kaggle 数据导入 -->
+                <div class="accordion">
+                    <button class="accordion-header" onclick="toggleAccordion(this)">
+                        <span>📥 Kaggle 数据导入</span>
+                        <svg class="accordion-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="6,9 12,15 18,9"></polyline>
+                        </svg>
+                    </button>
+                    <div class="accordion-content">
+                        <div class="accordion-body">
+                            <div style="font-size: 13px; line-height: 1.5; color: #666; margin-bottom: 10px;">
+                                导入 Kaggle "Confused Student EEG" 数据集到 InfluxDB，供 AI 分析。
+                            </div>
+                            <div style="margin-bottom: 8px;">
+                                <label style="font-size: 12px; color: #888; display: block; margin-bottom: 4px;">CSV 文件路径：</label>
+                                <input type="text" id="kaggleCsvPath" placeholder="例: C:\data\EEG_data.csv"
+                                       style="width: 100%; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 13px; box-sizing: border-box; background: #f8fafc;">
+                            </div>
+                            <button class="btn" id="kaggleImportBtn" onclick="startKaggleImport()" style="width: 100%; margin-bottom: 8px;">
+                                📥 开始导入
+                            </button>
+                            <div id="kaggleImportStatus" style="display: none;">
+                                <div style="background: #f1f5f9; border-radius: 8px; padding: 10px; margin-bottom: 8px;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                        <span style="font-size: 12px; color: #64748b;" id="kaggleStatusText">准备中...</span>
+                                        <span style="font-size: 12px; font-weight: 600; color: #3b82f6;" id="kaggleProgressPercent">0%</span>
+                                    </div>
+                                    <div style="width: 100%; height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden;">
+                                        <div id="kaggleProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #3b82f6, #8b5cf6); border-radius: 3px; transition: width 0.3s ease;"></div>
+                                    </div>
+                                    <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;" id="kaggleRowCount"></div>
+                                </div>
+                            </div>
+                            <div style="font-size: 11px; color: #94a3b8; line-height: 1.4;">
+                                💡 数据集下载：<a href="https://www.kaggle.com/datasets/wanghaohan/confused-eeg/data" target="_blank" style="color: #3b82f6;">Kaggle 链接</a><br>
+                                导入后可用 AI 分析：<br>
+                                "分析 Kaggle 脑电数据中的困惑状态"
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== 实时监测页面 ========== -->
+    <div class="page-content" id="pageMonitorContent" style="display:none;">
+        <div class="monitor-page">
+            <!-- 状态概览卡片 -->
+            <div class="monitor-status-card" id="monitorStatusCard">
+                <div class="monitor-status-icon" id="monitorStatusIcon">
+                    <div class="brain-icon-wrapper">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M9.5 2a2.5 2.5 0 0 1 2.5 2.5v0a2.5 2.5 0 0 1-2.5 2.5 2.5 2.5 0 0 1-2.5-2.5v0A2.5 2.5 0 0 1 9.5 2z"></path>
+                            <path d="M14.5 7a2.5 2.5 0 0 1 2.5 2.5v0a2.5 2.5 0 0 1-2.5 2.5H14"></path>
+                            <path d="M9.5 7A2.5 2.5 0 0 0 7 9.5v0A2.5 2.5 0 0 0 9.5 12H10"></path>
+                            <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v0A2.5 2.5 0 0 0 14.5 7"></path>
+                            <path d="M9 12v0a2.5 2.5 0 0 0 2.5 2.5h1a2.5 2.5 0 0 0 2.5-2.5v0"></path>
+                            <path d="M12 14.5V22"></path>
+                            <path d="M8 22h8"></path>
+                        </svg>
+                    </div>
+                    <span class="monitor-status-label" id="monitorStatusLabel">等待数据</span>
+                </div>
+                <div class="monitor-status-info">
+                    <h2 class="monitor-status-title" id="monitorStatusTitle">尚未开始分析</h2>
+                    <p class="monitor-status-desc" id="monitorStatusDesc">点击"开始分析"启动实时脑电数据分析</p>
+                </div>
+            </div>
+
+            <!-- 频段数据卡片组 -->
+            <div class="band-cards-container" id="bandCardsContainer">
+                <!-- Delta -->
+                <div class="band-card" id="bandCardDelta">
+                    <div class="band-card-header">
+                        <span class="band-icon" style="background: #8b5cf6;">🌙</span>
+                        <span class="band-name">Delta</span>
+                        <span class="band-range">0.5-4 Hz</span>
+                    </div>
+                    <div class="band-card-value" id="bandValueDelta">--</div>
+                    <div class="band-card-interpret">
+                        <span class="band-interpret-text" id="bandInterpretDelta">深度睡眠 / 身体修复</span>
+                        <button class="band-help-btn" onclick="showBandDetail('delta')">?</button>
+                    </div>
+                    <div class="band-card-bar">
+                        <div class="band-bar-fill" id="bandBarDelta" style="width:0%; background: linear-gradient(90deg, #8b5cf6, #a78bfa);"></div>
+                    </div>
+                </div>
+                <!-- Theta -->
+                <div class="band-card" id="bandCardTheta">
+                    <div class="band-card-header">
+                        <span class="band-icon" style="background: #ec4899;">🧘</span>
+                        <span class="band-name">Theta</span>
+                        <span class="band-range">4-8 Hz</span>
+                    </div>
+                    <div class="band-card-value" id="bandValueTheta">--</div>
+                    <div class="band-card-interpret">
+                        <span class="band-interpret-text" id="bandInterpretTheta">冥想 / 创造力 / 浅睡</span>
+                        <button class="band-help-btn" onclick="showBandDetail('theta')">?</button>
+                    </div>
+                    <div class="band-card-bar">
+                        <div class="band-bar-fill" id="bandBarTheta" style="width:0%; background: linear-gradient(90deg, #ec4899, #f472b6);"></div>
+                    </div>
+                </div>
+                <!-- Alpha -->
+                <div class="band-card" id="bandCardAlpha">
+                    <div class="band-card-header">
+                        <span class="band-icon" style="background: #f59e0b;">😌</span>
+                        <span class="band-name">Alpha</span>
+                        <span class="band-range">8-13 Hz</span>
+                    </div>
+                    <div class="band-card-value" id="bandValueAlpha">--</div>
+                    <div class="band-card-interpret">
+                        <span class="band-interpret-text" id="bandInterpretAlpha">放松 / 平静 / 静息状态</span>
+                        <button class="band-help-btn" onclick="showBandDetail('alpha')">?</button>
+                    </div>
+                    <div class="band-card-bar">
+                        <div class="band-bar-fill" id="bandBarAlpha" style="width:0%; background: linear-gradient(90deg, #f59e0b, #fbbf24);"></div>
+                    </div>
+                </div>
+                <!-- Beta -->
+                <div class="band-card" id="bandCardBeta">
+                    <div class="band-card-header">
+                        <span class="band-icon" style="background: #10b981;">🎯</span>
+                        <span class="band-name">Beta</span>
+                        <span class="band-range">13-30 Hz</span>
+                    </div>
+                    <div class="band-card-value" id="bandValueBeta">--</div>
+                    <div class="band-card-interpret">
+                        <span class="band-interpret-text" id="bandInterpretBeta">专注 / 逻辑思维 / 警觉</span>
+                        <button class="band-help-btn" onclick="showBandDetail('beta')">?</button>
+                    </div>
+                    <div class="band-card-bar">
+                        <div class="band-bar-fill" id="bandBarBeta" style="width:0%; background: linear-gradient(90deg, #10b981, #34d399);"></div>
+                    </div>
+                </div>
+                <!-- Gamma -->
+                <div class="band-card" id="bandCardGamma">
+                    <div class="band-card-header">
+                        <span class="band-icon" style="background: #3b82f6;">⚡</span>
+                        <span class="band-name">Gamma</span>
+                        <span class="band-range">30-100 Hz</span>
+                    </div>
+                    <div class="band-card-value" id="bandValueGamma">--</div>
+                    <div class="band-card-interpret">
+                        <span class="band-interpret-text" id="bandInterpretGamma">高度认知 / 学习 / 记忆</span>
+                        <button class="band-help-btn" onclick="showBandDetail('gamma')">?</button>
+                    </div>
+                    <div class="band-card-bar">
+                        <div class="band-bar-fill" id="bandBarGamma" style="width:0%; background: linear-gradient(90deg, #3b82f6, #60a5fa);"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 分析记录时间线 -->
+            <div class="monitor-timeline-section">
+                <div class="timeline-header">
+                    <h3 class="timeline-title">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="12" y1="20" x2="12" y2="10"></line>
+                            <line x1="18" y1="20" x2="18" y2="4"></line>
+                            <line x1="6" y1="20" x2="6" y2="16"></line>
+                        </svg>
+                        分析记录时间线
+                    </h3>
+                    <span class="timeline-count" id="timelineCount">0 条记录</span>
+                </div>
+                <div class="timeline-list" id="timelineList">
+                    <div class="timeline-empty">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.3;">
+                            <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"></polyline>
+                        </svg>
+                        <p>暂无分析记录</p>
+                        <small>启动实时分析后，数据将在此显示</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== 悬浮球（弹幕通知） ========== -->
+    <div class="floating-ball" id="floatingBall" title="点击查看历史分析记录面板">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <span class="floating-ball-badge" id="floatingBallBadge" style="display:none;"></span>
+    </div>
+
+    <!-- ========== 弹幕历史侧边栏（保持不变） ========== -->
+    <div class="barrage-sidebar-overlay" id="barrageSidebarOverlay" onclick="toggleBarrageSidebar()"></div>
+    <div class="barrage-sidebar-panel" id="barrageSidebar">
+        <div class="barrage-sidebar-header">
+            <h3 class="barrage-sidebar-title">实时分析历史记录</h3>
+            <button class="barrage-close-btn" onclick="toggleBarrageSidebar()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </div>
+        <div class="barrage-history-content">
+            <div class="barrage-list" id="barrageList">
+                <div class="barrage-empty">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                    暂无弹幕记录<br>
+                    <small>点击开始按钮启动实时分析</small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== 频段详情弹窗 ========== -->
+    <div class="band-detail-modal" id="bandDetailModal">
+        <div class="band-detail-card">
+            <button class="band-detail-close" onclick="closeBandDetail()">✕</button>
+            <div class="band-detail-header" id="bandDetailHeader"></div>
+            <div class="band-detail-body" id="bandDetailBody"></div>
+        </div>
+    </div>
+
+</div>
+
+<script src="/js/globals.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/utils.js"></script>
+<script src="/js/auth.js"></script>
+<script src="/js/connection.js"></script>
+<script src="/js/barrage.js"></script>
+<script src="/js/chat.js"></script>
+<script src="/js/session.js"></script>
+<script src="/js/app.js?v=3"></script>
+</body>
+</html>
