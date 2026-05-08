@@ -28,7 +28,7 @@ log("  Route A: NeuroRA Handbook Method (tbyt_decoding_kfold)")
 log("=" * 65)
 
 client = InfluxDBClient3(host="http://localhost:8181", database="eeg_db", token="apiv3_token", org="")
-df = client.query("SELECT time, subject_id, video_id, delta, theta, alpha1, alpha2, beta1, beta2, gamma1, gamma2, attention, mediation, confused FROM kaggle_eeg ORDER BY subject_id, video_id, time").to_pandas()
+df = client.query("SELECT time, subject_id, video_id, delta, theta, alpha1, alpha2, beta1, beta2, gamma1, gamma2, attention, mediation, confused, self_confused FROM kaggle_eeg ORDER BY subject_id, video_id, time").to_pandas()
 
 def parse_id(val, prefix):
     s = str(val).strip()
@@ -36,7 +36,7 @@ def parse_id(val, prefix):
 
 df['sub'] = df['subject_id'].apply(lambda x: parse_id(x, 'S'))
 df['vid'] = df['video_id'].apply(lambda x: parse_id(x, 'V'))
-df['label'] = (df['confused'].astype(str).str.strip().str.lower() == 'yes').astype(int)
+df['label'] = (df['self_confused'].astype(str).str.strip().str.lower() == 'yes').astype(int)
 df = df[df['sub'] >= 0].copy().drop_duplicates(subset=['sub','vid','delta','theta']).sort_values(by=['sub', 'vid', 'time']).reset_index(drop=True)
 
 df['alpha_total'] = df['alpha1'] + df['alpha2']

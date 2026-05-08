@@ -102,7 +102,7 @@ def analyze_table(client, table_name):
     log("  [2/4] 自适应列检测...")
     sub_col = detect_col(df, ['subject_id','SubjectID','subject','sub','participant','user_id'])
     vid_col = detect_col(df, ['video_id','VideoID','video','vid','trial','session'])
-    label_col = detect_col(df, ['confused','label','Label','class','target','state','cognitive_state'])
+    label_col = detect_col(df, ['self_confused','confused','label','Label','class','target','state','cognitive_state'])
     if not sub_col: df['subject_id']='S0'; sub_col='subject_id'
     if not vid_col: df['video_id']='V0'; vid_col='video_id'
     if not label_col:
@@ -154,14 +154,26 @@ def analyze_table(client, table_name):
         df['theta_alpha'] = df['theta']/(df['alpha_total']+eps); cognitive.append('theta_alpha')
     if 'alpha_total' in derived and 'beta_total' in derived:
         df['alpha_beta'] = df['alpha_total']/(df['beta_total']+eps); cognitive.append('alpha_beta')
-    if 'beta1' in available and 'alpha_total' in derived and 'theta' in available:
-        df['engagement'] = df['beta1']/(df['alpha_total']+df['theta']+eps); cognitive.append('engagement')
+    # [优化1] Engagement 使用 beta_total 而非仅 beta1 (知识库 4.2: Engagement 是最可靠指标 -19.6%)
+    if 'beta_total' in derived and 'alpha_total' in derived and 'theta' in available:
+        df['engagement'] = df['beta_total']/(df['alpha_total']+df['theta']+eps); cognitive.append('engagement')
     if 'theta' in available and 'alpha_total' in derived and 'beta_total' in derived:
         df['fatigue'] = (df['theta']+df['alpha_total'])/(df['beta_total']+eps); cognitive.append('fatigue')
     if 'beta_total' in derived and 'delta' in available and 'theta' in available:
         df['focus'] = df['beta_total']/(df['delta']+df['theta']+eps); cognitive.append('focus')
 
-    core = available + cognitive
+    # [优化2] 相对功率特征 — 消除"同涨陷阱" (知识库 3.4: 所有频段绝对PSD同向上升, 比值才有区分力)
+    rel_feats = []
+    raw_bands = [b for b in ['delta','theta','alpha1','alpha2','beta1','beta2','gamma1','gamma2'] if b in available]
+    if len(raw_bands) >= 4:
+        df['total_power'] = sum(df[b] for b in raw_bands) + eps
+        for b in raw_bands:
+            rname = b + '_rel'
+            df[rname] = df[b] / df['total_power']
+            rel_feats.append(rname)
+        log(f"  >>> 相对功率特征: {len(rel_feats)} 维 (消除同涨陷阱)")
+
+    core = available + cognitive + rel_feats
     group = df.groupby(['sub','vid'])
     for c in core: df[c+'_d1'] = group[c].diff().fillna(0)
     for c in core: df[c+'_d2'] = group[c+'_d1'].diff().fillna(0)
@@ -171,20 +183,37 @@ def analyze_table(client, table_name):
     for c in core:
         df[c+'_m5'] = group[c].rolling(5,min_periods=1).mean().reset_index([0,1],drop=True)
         df[c+'_s5'] = group[c].rolling(5,min_periods=1).std().fillna(0).reset_index([0,1],drop=True)
-    feats = core+[c+'_d1' for c in core]+[c+'_d2' for c in core]+[c+'_m3' for c in core]+[c+'_s3' for c in core]+[c+'_m5' for c in core]+[c+'_s5' for c in core]
+    # [V9.2 优化4] 大窗口 W=7 滑动特征 — 捕捉约3.5秒长程认知趋势
+    for c in core:
+        df[c+'_m7'] = group[c].rolling(7,min_periods=1).mean().reset_index([0,1],drop=True)
+        df[c+'_s7'] = group[c].rolling(7,min_periods=1).std().fillna(0).reset_index([0,1],drop=True)
+    # [优化3] 变异系数 CV = std/mean (知识库 3.5)
+    cv_feats = []
+    for c in core:
+        cv3 = c + '_cv3'
+        df[cv3] = df[c+'_s3'] / (df[c+'_m3'].abs() + eps)
+        cv_feats.append(cv3)
+    log(f"  >>> 变异系数特征: {len(cv_feats)} 维 (归一化波动率)")
+
+    feats = core+[c+'_d1' for c in core]+[c+'_d2' for c in core]+[c+'_m3' for c in core]+[c+'_s3' for c in core]+[c+'_m5' for c in core]+[c+'_s5' for c in core]+[c+'_m7' for c in core]+[c+'_s7' for c in core]+cv_feats
     dims = len(feats)
-    log(f"  >>> 特征空间: {dims} 维 (核心 {len(core)} × 7)")
+    log(f"  >>> 特征空间: {dims} 维 (核心 {len(core)} x 9 + CV {len(cv_feats)})")
 
     # ---- XGBoost 5-Fold ----
     log("  [4/4] XGBoost Subject-Dependent 5-Fold 交叉验证...")
+    # [V9.2 优化5] XGBoost 正则化 — 抑制高维特征噪声, 防止强势被试过拟合
+    xgb_params = dict(
+        n_estimators=500, max_depth=7, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.7, min_child_weight=3,
+        reg_alpha=0.1, reg_lambda=1.5,
+        eval_metric='logloss', random_state=42
+    )
     try:
-        model = xgb.XGBClassifier(n_estimators=300,max_depth=8,learning_rate=0.05,
-                                  tree_method='hist',device='cuda',eval_metric='logloss',random_state=42)
-        log("  >>> GPU 加速 (CUDA)")
+        model = xgb.XGBClassifier(**xgb_params, tree_method='hist', device='cuda')
+        log("  >>> GPU 加速 (CUDA) | 500树 depth=7 正则化")
     except:
-        model = xgb.XGBClassifier(n_estimators=300,max_depth=8,learning_rate=0.05,
-                                  n_jobs=-1,eval_metric='logloss',random_state=42)
-        log("  >>> CPU 并行计算")
+        model = xgb.XGBClassifier(**xgb_params, n_jobs=-1)
+        log("  >>> CPU 并行 | 500树 depth=7 正则化")
 
     subject_accs, total_correct, total_samples = [], 0, 0
     for sub in sorted(df['sub'].unique()):

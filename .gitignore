@@ -26,3 +26,4 @@ Thumbs.db
 # Large Tools (Too heavy for GitHub 100MB limit)
 InfluxDB Core 3.2.1/
 openbcigui_v6.0.0-beta.1_windows64/
+influxdb3_mcp_server/

@@ -1,0 +1,26 @@
+=================================================================
+  Route A: NeuroRA Handbook Method (tbyt_decoding_kfold)
+=================================================================
+  Feature expansion: 8 -> 48 channels
+  Tensor shape: (10, 113, 48, 10)
+
+  [RUNNING] tbyt_decoding_kfold...
+  Completed & Cached.
+
+=================================================================
+  Route A Results (NeuroRA Handbook)
+=================================================================
+  Peak Accuracy: 73.98%
+  Mean Accuracy: 73.65%
+    Subject 0: peak 66.59%
+    Subject 1: peak 81.81%
+    Subject 2: peak 82.43%
+    Subject 3: peak 75.66%
+    Subject 4: peak 65.69%
+    Subject 5: peak 82.89%
+    Subject 6: peak 67.57%
+    Subject 7: peak 77.81%
+    Subject 8: peak 83.67%
+    Subject 9: peak 66.24%
+  Significant Time-Windows: 5/5 (p<0.05)
+  Plot saved: neurora_hybrid_result.png
